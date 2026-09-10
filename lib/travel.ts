@@ -1,0 +1,73 @@
+import { z } from "zod";
+
+export const uid = () => crypto.randomUUID();
+export const today = () => { const d = new Date(); return localDate(d); };
+export const localDate = (d: Date) => [d.getFullYear(), String(d.getMonth()+1).padStart(2,"0"), String(d.getDate()).padStart(2,"0")].join("-");
+const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v=>{const n=Date.parse(v+"T00:00:00Z");return Number.isFinite(n)&&new Date(n).toISOString().slice(0,10)===v;},"Invalid calendar date");
+const time = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+const zone = z.string().refine(v => {try {new Intl.DateTimeFormat("en",{timeZone:v});return true;}catch{return false;}}, "Use an IANA time zone, such as Europe/Rome");
+export const kinds = ["Flight","Hotel","Rental car","Excursion","Other"] as const;
+export const paymentSchema = z.object({id:z.string(),amount:z.number().positive().finite(),date,note:z.string()});
+export const bookingSchema = z.object({
+ id:z.string(),tripId:z.string(),kind:z.enum(kinds),title:z.string().trim().min(1).max(300),start:time,end:time,zone,endZone:zone,
+ location:z.string(),confirmation:z.string(),notes:z.string(),url:z.string().refine(v=>!v||/^https?:\/\//i.test(v),"Use an https:// or http:// link"),
+ total:z.number().nonnegative().finite(),currency:z.string().regex(/^[A-Z]{3}$/).refine(v=>{try{new Intl.NumberFormat("en",{style:"currency",currency:v});return true;}catch{return false;}}),
+ due:z.union([date,z.literal("")]),payments:z.array(paymentSchema),
+}).superRefine((b,c)=>{try{if(instant(b.end,b.endZone)<instant(b.start,b.zone))c.addIssue({code:"custom",message:"End must be after start"});}catch(e){c.addIssue({code:"custom",message:String(e)});}if(paid(b)>b.total+0.005)c.addIssue({code:"custom",message:"Payments exceed the reservation total"});});
+export type Booking=z.infer<typeof bookingSchema>;
+export const tripSchema=z.object({id:z.string(),name:z.string().trim().min(1),destination:z.string(),notes:z.string()});
+export const artifactSchema=z.object({id:z.string(),tripId:z.string(),bookingId:z.string(),name:z.string(),type:z.string(),data:z.string(),size:z.number().nonnegative(),added:date});
+export const vaultSchema=z.object({version:z.literal(1),trips:z.array(tripSchema),bookings:z.array(bookingSchema),artifacts:z.array(artifactSchema)}).superRefine((v,c)=>{
+ const ids=[...v.trips,...v.bookings,...v.artifacts].map(x=>x.id);
+ if(new Set(ids).size!==ids.length)c.addIssue({code:"custom",message:"Duplicate record IDs"});
+ if(v.bookings.some(b=>!v.trips.some(t=>t.id===b.tripId))||v.artifacts.some(a=>!v.trips.some(t=>t.id===a.tripId)||(a.bookingId&&!v.bookings.some(b=>b.id===a.bookingId&&b.tripId===a.tripId))))c.addIssue({code:"custom",message:"Document or reservation references a missing trip"});
+});
+export type Vault=z.infer<typeof vaultSchema>;
+export type Artifact=z.infer<typeof artifactSchema>;
+export const emptyVault=():Vault=>({version:1,trips:[],bookings:[],artifacts:[]});
+export const paid=(b:{payments:{amount:number}[]})=>Math.round(b.payments.reduce((a,p)=>a+p.amount,0)*100)/100;
+export const balance=(b:Booking)=>Math.max(0,Math.round((b.total-paid(b))*100)/100);
+export const money=(n:number,c="USD")=>new Intl.NumberFormat("en-US",{style:"currency",currency:c}).format(n);
+export function instant(local:string,tz:string):number{
+ const target=Date.parse(local+"Z"); if(!Number.isFinite(target)||new Date(target).toISOString().slice(0,16)!==local)throw new Error("Invalid date");
+ const fmt=new Intl.DateTimeFormat("sv-SE",{timeZone:tz,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"});
+ let value=target;
+ for(let i=0;i<4;i++){const parts=Object.fromEntries(fmt.formatToParts(value).map(x=>[x.type,x.value]));const rendered=Date.UTC(+parts.year,+parts.month-1,+parts.day,+parts.hour,+parts.minute,+parts.second);const delta=target-rendered;if(!delta)return value;value+=delta;}
+ throw new Error("This local time does not exist because of daylight saving time");
+}
+export const stamp=(b:Booking)=>new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",timeZone:b.zone}).format(instant(b.start,b.zone));
+export function blankBooking(tripId:string):Booking {return {id:uid(),tripId,kind:"Flight",title:"",start:today()+"T09:00",end:today()+"T10:00",zone:Intl.DateTimeFormat().resolvedOptions().timeZone,endZone:Intl.DateTimeFormat().resolvedOptions().timeZone,location:"",confirmation:"",notes:"",url:"",total:0,currency:"USD",due:"",payments:[]};}
+const esc=(s:string)=>s.replace(/\\/g,"\\\\").replace(/\r?\n/g,"\\n").replace(/,/g,"\\,").replace(/;/g,"\\;");
+const utc=(n:number)=>new Date(n).toISOString().replace(/[-:]/g,"").replace(/\.\d{3}/,"");
+export function calendarExport(bookings:Booking[]):string{
+ const lines=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//My Travel Bot//Travel//EN","CALSCALE:GREGORIAN"];
+ for(const b of bookings){
+  lines.push("BEGIN:VEVENT","UID:"+b.id+"@mytravelbot","DTSTAMP:"+utc(Date.now()),"DTSTART:"+utc(instant(b.start,b.zone)),"DTEND:"+utc(instant(b.end,b.endZone)),"SUMMARY:"+esc(b.title),"LOCATION:"+esc(b.location),"DESCRIPTION:"+esc(b.kind+" • "+b.zone+"\n"+b.notes),"BEGIN:VALARM","TRIGGER:-PT2H","ACTION:DISPLAY","DESCRIPTION:Travel reservation","END:VALARM","END:VEVENT");
+  if(b.due&&balance(b)>0)lines.push("BEGIN:VEVENT","UID:"+b.id+"-payment@mytravelbot","DTSTAMP:"+utc(Date.now()),"DTSTART;VALUE=DATE:"+b.due.replace(/-/g,""),"SUMMARY:"+esc("Payment due: "+b.title+" "+money(balance(b),b.currency)),"BEGIN:VALARM","TRIGGER:-P1D","ACTION:DISPLAY","DESCRIPTION:Travel payment due","END:VALARM","END:VEVENT");
+ }
+ lines.push("END:VCALENDAR");
+ // Fold by UTF-8 octets, preserving Unicode code points (RFC 5545).
+ return lines.map(line=>{let out="",chunk="";for(const ch of line){if(new TextEncoder().encode(chunk+ch).length>73){out+=chunk+"\r\n ";chunk="";}chunk+=ch;}return out+chunk;}).join("\r\n")+"\r\n";
+}
+export function csvRows(text:string):string[][]{
+ const rows:string[][]=[];let row:string[]=[],v="",quoted=false;
+ for(let i=0;i<text.length;i++){const ch=text[i];if(ch==='"'){if(quoted&&text[i+1]==='"'){v+='"';i++;}else quoted=!quoted;}else if(ch===","&&!quoted){row.push(v);v="";}else if((ch==="\n"||ch==="\r")&&!quoted){if(ch==="\r"&&text[i+1]==="\n")i++;row.push(v);if(row.some(Boolean))rows.push(row);row=[];v="";}else v+=ch;}
+ if(quoted)throw new Error("CSV has an unclosed quotation mark");row.push(v);if(row.some(Boolean))rows.push(row);return rows;
+}
+export function importBookings(text:string,tripId:string):Booking[]{
+ const rows=csvRows(text.trim());const header=rows.shift()?.map(x=>x.trim().replace(/^\uFEFF/,""))??[];
+ if(!["title","start","end","zone"].every(x=>header.includes(x)))throw new Error("CSV requires title, start, end, zone columns");
+ return rows.map((r,i)=>{const f=Object.fromEntries(header.map((k,j)=>[k,r[j]??""]));return bookingSchema.parse({...blankBooking(tripId),...f,id:uid(),tripId,endZone:f.endZone||f.zone,total:Number(f.total||0),payments:[]});});
+}
+export function importCalendar(text:string,tripId:string):Booking[]{
+ const unfolded=text.replace(/\r?\n[ \t]/g,"");const blocks=unfolded.split("BEGIN:VEVENT").slice(1);
+ if(!blocks.length)throw new Error("No calendar events found");
+ return blocks.map(block=>{
+ const lines=block.split(/\r?\n/);if(lines.some(l=>/^RRULE|^RECURRENCE-ID/.test(l)))throw new Error("Recurring calendar events need manual review; import individual appointments.");
+ const get=(key:string)=>lines.find(l=>l.startsWith(key+":")||l.startsWith(key+";"))??"";
+ const value=(line:string)=>line.slice(line.indexOf(":")+1).replace(/\\n/gi,"\n").replace(/\\([,;\\])/g,"$1");
+ const dt=(key:string)=>{const l=get(key);const v=value(l);const m=/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(?:\d{2})?(Z)?)?$/.exec(v);if(!m)throw new Error("Unsupported calendar date");return {local:m[1]+"-"+m[2]+"-"+m[3]+"T"+(m[4]||"09")+":"+(m[5]||"00"),zone:m[6]?"UTC":(/TZID=([^:;]+)/.exec(l)?.[1]||Intl.DateTimeFormat().resolvedOptions().timeZone)};};
+ const s=dt("DTSTART"),e=get("DTEND")?dt("DTEND"):s;
+ return bookingSchema.parse({...blankBooking(tripId),kind:"Other",title:value(get("SUMMARY"))||"Imported appointment",start:s.local,end:e.local,zone:s.zone,endZone:e.zone,notes:value(get("DESCRIPTION")),location:value(get("LOCATION"))});
+ });
+}
