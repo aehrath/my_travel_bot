@@ -7,14 +7,47 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v=>{const n=Date.par
 const time = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
 const zone = z.string().refine(v => {try {new Intl.DateTimeFormat("en",{timeZone:v});return true;}catch{return false;}}, "Use an IANA time zone, such as Europe/Rome");
 export const kinds = ["Flight","Hotel","Rental car","Excursion","Other"] as const;
+export const reservationNameFields:Record<(typeof kinds)[number],{label:string;placeholder:string}>={
+ Flight:{label:"Flight name",placeholder:"Flight SFO → NAN"},
+ Hotel:{label:"Hotel / property name",placeholder:"e.g. Coral Coast Resort"},
+ "Rental car":{label:"Rental car reservation name",placeholder:"e.g. Hertz · Nadi airport pick-up"},
+ Excursion:{label:"Excursion / activity name",placeholder:"e.g. Sunset cruise"},
+ Other:{label:"Reservation name",placeholder:"e.g. Airport transfer or dinner reservation"},
+};
+export const reservationTimeLabels:Record<(typeof kinds)[number],{start:string;end:string}>={
+ Flight:{start:"Departure",end:"Arrival"},
+ Hotel:{start:"Check-in",end:"Check-out"},
+ "Rental car":{start:"Pick-up",end:"Drop-off"},
+ Excursion:{start:"Excursion start",end:"Excursion end"},
+ Other:{start:"Start",end:"End"},
+};
 export const paymentSchema = z.object({id:z.string(),amount:z.number().positive().finite(),date,note:z.string()});
 export const bookingSchema = z.object({
  id:z.string(),tripId:z.string(),kind:z.enum(kinds),title:z.string().trim().min(1).max(300),start:time,end:time,zone,endZone:zone,
+ airline:z.string().max(300).default(""),flightNumber:z.string().max(30).default(""),
+ fromAirport:z.string().max(300).default(""),toAirport:z.string().max(300).default(""),
  location:z.string(),confirmation:z.string(),notes:z.string(),url:z.string().refine(v=>!v||/^https?:\/\//i.test(v),"Use an https:// or http:// link"),
  total:z.number().nonnegative().finite(),currency:z.string().regex(/^[A-Z]{3}$/).refine(v=>{try{new Intl.NumberFormat("en",{style:"currency",currency:v});return true;}catch{return false;}}),
  due:z.union([date,z.literal("")]),payments:z.array(paymentSchema),
 }).superRefine((b,c)=>{try{if(instant(b.end,b.endZone)<instant(b.start,b.zone))c.addIssue({code:"custom",message:"End must be after start"});}catch(e){c.addIssue({code:"custom",message:String(e)});}if(paid(b)>b.total+0.005)c.addIssue({code:"custom",message:"Payments exceed the reservation total"});});
 export type Booking=z.infer<typeof bookingSchema>;
+export function updateReservationTime(b:Booking,key:"start"|"end",value:string):Booking {
+ const next={...b,[key]:value};
+ if(key==="start"&&/^\d{4}-\d{2}-\d{2}T/.test(value)&&value.slice(0,10)!==b.start.slice(0,10)){
+  next.end=value.slice(0,10)+"T"+(b.end.slice(11)||"10:00");
+ }
+ return next;
+}
+export function flightReservationName(b:Pick<Booking,"fromAirport"|"toAirport">):string {
+ const short=(value:string)=>/^([A-Z]{3})(?:\s+—|$)/.exec(value.trim())?.[1]||value.trim().slice(0,120);
+ const from=short(b.fromAirport),to=short(b.toAirport);
+ return from&&to?`Flight ${from} → ${to}`:"";
+}
+export function prefillFlightName(previous:Booking,next:Booking):Booking {
+ if(next.kind!=="Flight"||next.title!==previous.title)return next;
+ if(next.title.trim()&&next.title!==flightReservationName(previous))return next;
+ return {...next,title:flightReservationName(next)||next.title};
+}
 export const tripSchema=z.object({id:z.string(),name:z.string().trim().min(1),destination:z.string(),notes:z.string()});
 export const artifactSchema=z.object({id:z.string(),tripId:z.string(),bookingId:z.string(),name:z.string(),type:z.string(),data:z.string(),size:z.number().nonnegative(),added:date});
 export const vaultSchema=z.object({version:z.literal(1),trips:z.array(tripSchema),bookings:z.array(bookingSchema),artifacts:z.array(artifactSchema)}).superRefine((v,c)=>{
@@ -36,13 +69,14 @@ export function instant(local:string,tz:string):number{
  throw new Error("This local time does not exist because of daylight saving time");
 }
 export const stamp=(b:Booking)=>new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",timeZone:b.zone}).format(instant(b.start,b.zone));
-export function blankBooking(tripId:string):Booking {return {id:uid(),tripId,kind:"Flight",title:"",start:today()+"T09:00",end:today()+"T10:00",zone:Intl.DateTimeFormat().resolvedOptions().timeZone,endZone:Intl.DateTimeFormat().resolvedOptions().timeZone,location:"",confirmation:"",notes:"",url:"",total:0,currency:"USD",due:"",payments:[]};}
+export function blankBooking(tripId:string):Booking {return {id:uid(),tripId,kind:"Flight",title:"",airline:"",flightNumber:"",fromAirport:"",toAirport:"",start:today()+"T09:00",end:today()+"T10:00",zone:Intl.DateTimeFormat().resolvedOptions().timeZone,endZone:Intl.DateTimeFormat().resolvedOptions().timeZone,location:"",confirmation:"",notes:"",url:"",total:0,currency:"USD",due:"",payments:[]};}
+export const bookingLocation=(b:Booking)=>b.kind==="Flight"&&(b.fromAirport||b.toAirport)?[b.fromAirport||"Departure not set",b.toAirport||"Arrival not set"].join(" → "):b.location;
 const esc=(s:string)=>s.replace(/\\/g,"\\\\").replace(/\r?\n/g,"\\n").replace(/,/g,"\\,").replace(/;/g,"\\;");
 const utc=(n:number)=>new Date(n).toISOString().replace(/[-:]/g,"").replace(/\.\d{3}/,"");
 export function calendarExport(bookings:Booking[]):string{
  const lines=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//My Travel Bot//Travel//EN","CALSCALE:GREGORIAN"];
  for(const b of bookings){
-  lines.push("BEGIN:VEVENT","UID:"+b.id+"@mytravelbot","DTSTAMP:"+utc(Date.now()),"DTSTART:"+utc(instant(b.start,b.zone)),"DTEND:"+utc(instant(b.end,b.endZone)),"SUMMARY:"+esc(b.title),"LOCATION:"+esc(b.location),"DESCRIPTION:"+esc(b.kind+" • "+b.zone+"\n"+b.notes),"BEGIN:VALARM","TRIGGER:-PT2H","ACTION:DISPLAY","DESCRIPTION:Travel reservation","END:VALARM","END:VEVENT");
+  lines.push("BEGIN:VEVENT","UID:"+b.id+"@mytravelbot","DTSTAMP:"+utc(Date.now()),"DTSTART:"+utc(instant(b.start,b.zone)),"DTEND:"+utc(instant(b.end,b.endZone)),"SUMMARY:"+esc(b.title),"LOCATION:"+esc(bookingLocation(b)),"DESCRIPTION:"+esc([b.kind,b.airline,b.flightNumber].filter(Boolean).join(" • ")+" • "+b.zone+"\n"+b.notes),"BEGIN:VALARM","TRIGGER:-PT2H","ACTION:DISPLAY","DESCRIPTION:Travel reservation","END:VALARM","END:VEVENT");
   if(b.due&&balance(b)>0)lines.push("BEGIN:VEVENT","UID:"+b.id+"-payment@mytravelbot","DTSTAMP:"+utc(Date.now()),"DTSTART;VALUE=DATE:"+b.due.replace(/-/g,""),"SUMMARY:"+esc("Payment due: "+b.title+" "+money(balance(b),b.currency)),"BEGIN:VALARM","TRIGGER:-P1D","ACTION:DISPLAY","DESCRIPTION:Travel payment due","END:VALARM","END:VEVENT");
  }
  lines.push("END:VCALENDAR");

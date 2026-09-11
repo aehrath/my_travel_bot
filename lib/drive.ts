@@ -3,8 +3,11 @@ type TokenResult={access_token?:string;error?:string};
 declare global {interface Window {google?:{accounts:{oauth2:{initTokenClient:(config:{client_id:string;scope:string;callback:(r:TokenResult)=>void;error_callback:(r:unknown)=>void})=>{requestAccessToken:()=>void};revoke:(token:string,callback:()=>void)=>void}}}}}
 let token="";let expires=0;
 export function disconnectDrive(){if(token)window.google?.accounts.oauth2.revoke(token,()=>{});token="";expires=0;}
-export async function connectDrive(clientId:string):Promise<void>{
- if(!clientId.endsWith(".apps.googleusercontent.com"))throw new Error("Enter your Google OAuth web client ID in Settings.");
+// Application registration, configured once by the app owner; never entered by travelers.
+const clientId=(process.env.NEXT_PUBLIC_GOOGLE_DRIVE_CLIENT_ID||"").trim();
+export const isDriveConfigured=()=>clientId.endsWith(".apps.googleusercontent.com");
+export async function connectDrive():Promise<void>{
+ if(!isDriveConfigured())throw new Error("Google Drive connection has not been enabled for this app yet.");
  if(!window.google){await new Promise<void>((resolve,reject)=>{const script=document.createElement("script");script.src="https://accounts.google.com/gsi/client";script.onload=()=>resolve();script.onerror=()=>reject(new Error("Google sign-in could not load. Check your connection."));document.head.appendChild(script);});}
  await new Promise<void>((resolve,reject)=>window.google!.accounts.oauth2.initTokenClient({client_id:clientId,scope:"https://www.googleapis.com/auth/drive.appdata",callback:r=>{if(!r.access_token)return reject(new Error(r.error||"Google did not grant access."));token=r.access_token;expires=Date.now()+50*60*1000;resolve();},error_callback:()=>reject(new Error("Google sign-in was closed or blocked. Try again."))}).requestAccessToken());
 }
