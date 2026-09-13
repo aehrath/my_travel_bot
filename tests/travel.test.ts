@@ -581,27 +581,16 @@ test("saving retains encrypted recovery revisions and rejects stale ciphertext e
  assert.equal((await decrypt(history![0],"save every new trip safely")).vault.trips[0].name,"Los Angeles Comic Con");
 });
 
-import {collectDriveAdditions} from "../lib/drive-additions";
 test("a phone with one trip automatically collects the PC's second trip without losing phone work",async()=>{
  const ring=await derive("shared device vault passphrase");
  const pc=emptyVault();pc.trips=[{id:"fiji",name:"Fiji",destination:"Fiji",notes:""},{id:"comic",name:"Los Angeles Comic Con",destination:"LA",notes:""}];
  pc.bookings=[{...blankBooking("fiji"),id:"hotel",title:"Old name",kind:"Hotel",start:"2026-12-01T14:00",end:"2026-12-02T11:00",total:100}];
  const phone=structuredClone(pc);phone.trips=phone.trips.slice(0,1);phone.bookings[0].title="Phone correction";phone.bookings[0].payments=[{id:"paid",amount:30,date:"2026-09-12",note:"Paid on phone"}];
- const pcCopy=await encrypt(pc,ring),phoneCopy=await encrypt(phone,ring);
- const copies=[{id:"phone",name:"phone.travel",modifiedTime:"2026-09-12T12:00:00Z"},{id:"pc",name:"pc.travel",modifiedTime:"2026-09-12T11:00:00Z"}];
- let downloads=0;
- const download=async(id:string)=>{downloads++;return id==="pc"?pcCopy:phoneCopy;};
- const result=await collectDriveAdditions(phone,ring,copies,{},download);
- assert.deepEqual(result.vault.trips.map(t=>t.id),["fiji","comic"]);
- assert.equal(result.vault.bookings[0].title,"Phone correction");assert.equal(result.vault.bookings[0].payments[0].amount,30);
- const again=await collectDriveAdditions(result.vault,ring,copies,result.seen,download);
- assert.deepEqual(again.vault,result.vault);assert.equal(downloads,2,"unchanged encrypted copies are not downloaded repeatedly");
- const deleted=await collectDriveAdditions(phone,ring,copies,{},download,{trips:["comic"],bookings:[],artifacts:[]});
- assert.deepEqual(deleted.vault,{...phone,deletedTripIds:["comic"]},"intentional local deletions cannot be undone by an older Drive copy");
- const failedSeen={};const failed=await collectDriveAdditions(phone,ring,copies,failedSeen,async()=>{throw new Error("offline");});assert.equal(failed.issues.length,2);assert.deepEqual(failed.seen,{});
- assert.deepEqual(failedSeen,{});assert.equal(phone.trips.length,1,"failed downloads do not mutate the phone's vault");
- const foreign=await encrypt(emptyVault(),await derive("another private vault passphrase"));
- assert.deepEqual((await collectDriveAdditions(phone,ring,[copies[0]],{},async()=>foreign)).vault,phone);
+ const remote=(await decrypt(await encrypt(pc,ring),"shared device vault passphrase")).vault;
+ const merged=mergeVaultImport(phone,remote);
+ assert.deepEqual(merged.trips.map(t=>t.id),["fiji","comic"]);
+ assert.equal(merged.bookings[0].title,"Phone correction");
+ assert.equal(merged.bookings[0].payments[0].amount,30);
 });
 test("local removal markers are saved atomically and a stale tab cannot change them",async()=>{
  const {readLocalSetting}=await import("../lib/vault");
@@ -615,13 +604,6 @@ test("local removal markers are saved atomically and a stale tab cannot change t
  assert.deepEqual(await readLocalSetting("drive-local-removals:"+ring.salt),removed);
 });
 
- test("an unreadable old Drive copy cannot block a valid missing trip",async()=>{
- const ring=await derive("do not block healthy trip copies");
- const pc=emptyVault();pc.trips=[{id:"new",name:"New PC trip",destination:"",notes:""}];
- const saved=await encrypt(pc,ring),copies=[{id:"bad",name:"old.travel",modifiedTime:"1"},{id:"good",name:"pc.travel",modifiedTime:"2"}];
- const result=await collectDriveAdditions(emptyVault(),ring,copies,{},async id=>{if(id==="bad")throw new Error("Not a supported encrypted travel backup.");return saved;});
- assert.equal(result.vault.trips[0].id,"new");assert.equal(result.issues.length,1);assert.equal(result.seen.bad,undefined);assert.equal(result.seen.good,"2");
- });
 
 import {recordTripDeletions} from "../lib/merge-vault";
 import {saveDriveDraft,hasLocalDriveChanges} from "../lib/drive-save-state";
@@ -635,7 +617,9 @@ test("explicit trip deletion propagates encrypted, wins over offline edits, and 
  const encrypted=await encrypt(deleted,key);assert.ok(!JSON.stringify(encrypted).includes("delete-me"));
  const stale=structuredClone(original);stale.trips[0].notes="Offline edit after deletion";stale.trips[1].notes="Keep my local notes";
  for(const order of [["deleted","old"],["old","deleted"]]){
-  const result=await collectDriveAdditions(stale,key,order.map(id=>({id,name:id,modifiedTime:id})),{},async id=>id==="deleted"?encrypted:await encrypt(original,key));
+  let merged=stale;
+  for(const id of order)merged=mergeVaultImport(merged,(await decrypt(id==="deleted"?encrypted:await encrypt(original,key),"deletions travel between devices")).vault);
+  const result={vault:merged};
   assert.deepEqual(result.vault.trips.map(t=>t.id),["keep"]);assert.equal(result.vault.trips[0].notes,"Keep my local notes");assert.equal(result.vault.bookings.length,0);assert.equal(result.vault.artifacts.length,0);
   const reopened=(await decrypt(await encrypt(result.vault,key),"deletions travel between devices")).vault;
   assert.deepEqual(mergeVaultImport(reopened,stale),result.vault,"a later stale upload cannot resurrect the deleted trip");
@@ -661,14 +645,11 @@ test("local drafts survive reopening and only an explicit successful Drive save 
  assert.equal(hasLocalDriveChanges((await readVault())!,uploaded),true,"a save cannot mark later changes as uploaded");
 });
 
-test("Google-native files are skipped without download attempts or retry warnings",async()=>{
- const ring=await derive("skip native Google document files"),vault=emptyVault();
- vault.trips=[{id:"real",name:"Real saved trip",destination:"",notes:""}];
- const envelope=await encrypt(vault,ring),downloaded:string[]=[];
- const types=["application/vnd.google-apps.document","application/vnd.google-apps.spreadsheet","application/vnd.google-apps.presentation","application/vnd.google-apps.folder","application/vnd.google-apps.shortcut"];
- const copies=[...types.map((mimeType,index)=>({id:"native"+index,name:"my-travel-bot-copy.travel",modifiedTime:"now",mimeType})),{id:"binary",name:"my-travel-bot-vault.travel",modifiedTime:"now",mimeType:"application/json"},{id:"legacy",name:"my-travel-bot-legacy.travel",modifiedTime:"now"}];
- const result=await collectDriveAdditions(emptyVault(),ring,copies,{},async id=>{downloaded.push(id);assert.ok(!id.startsWith("native"));return envelope;});
- assert.deepEqual(downloaded,["binary","legacy"]);assert.deepEqual(result.issues,[]);assert.deepEqual(result.vault,vault);
+test("Google-native files remain excluded from manual backup discovery",async()=>{
+ const {isDownloadableDriveCopy}=await import("../lib/drive-file-types");
+ for(const kind of ["document","spreadsheet","presentation","folder","shortcut"])assert.equal(isDownloadableDriveCopy({mimeType:"application/vnd.google-apps."+kind}),false);
+ assert.equal(isDownloadableDriveCopy({mimeType:"application/json"}),true);
+ assert.equal(isDownloadableDriveCopy({}),true);
 });
 
 import {mergeLiveDraft} from "../lib/drive-live-sync";

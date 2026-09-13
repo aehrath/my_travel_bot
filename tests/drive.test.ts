@@ -297,7 +297,8 @@ test("live vault refresh accepts remote edits and conditional publication refuse
  const remote=structuredClone(base);remote.trips[0].name="PC changed this";
  const local=structuredClone(base);local.trips[1].notes="Phone local edit";
  const original=await encrypt(base,ring);await rememberDriveBase(original);
- let liveEnvelope=await encrypt(remote,ring),etag='"2"',writes=0;
+ const linked=async(value:typeof base)=>(await prepareDriveParts(value,ring,null,async()=>({id:"test-part-"+crypto.randomUUID()}))).document;
+ let liveEnvelope=await linked(remote),etag='"2"',writes=0;
  const reads:string[]=[];let partCount=0,failPart=false;
  globalThis.fetch=async(input,init={})=>{
   const url=String(input),metadata={...file,id:"live",etag,userPermission:{role:"owner"}};
@@ -328,12 +329,22 @@ test("live vault refresh accepts remote edits and conditional publication refuse
   assert.equal(reads.length,1,"unchanged live file requires only one fresh metadata request");
   assert.ok(!reads[0].includes("alt=media")&&!reads[0].includes("?q="));
   assert.deepEqual(warm.vault,fresh.vault);
+  const {writeLocalSetting}=await import("../lib/vault");
+  const cacheKey="drive-live-file:"+ring.salt;
+  const oldCache=await readLocalSetting<{id:string;etag:string;marker:string}>(cacheKey);
+  await writeLocalSetting(cacheKey,{id:oldCache!.id,etag:oldCache!.etag,marker:oldCache!.marker});
+  reads.length=0;
+  const checked=await readLatestDriveDraft(fresh.vault,ring);
+  assert.ok(checked.index,"older cache metadata cannot misreport a converted index as a full snapshot");
+  assert.equal(reads.filter(url=>url.includes("alt=media")).length,1,"missing cached document must be checked against Drive");
+  await rememberDriveBase(checked.envelope!,checked.file,checked.document);
   const edited=structuredClone(fresh.vault);edited.trips[0].notes="New remote edit";
-  liveEnvelope=await encrypt(edited,ring);etag='"5"';reads.length=0;
+  liveEnvelope=await linked(edited);etag='"5"';reads.length=0;
   const changed=await readLatestDriveDraft(fresh.vault,ring);
   assert.equal(changed.vault.trips[0].notes,"New remote edit");
   assert.equal(reads.filter(url=>url.includes("alt=media")).length,1,"changed revision downloads once");
   assert.equal(reads.length,3,"metadata before and after download guards racing saves");
+  changed.vault.trips[1].notes="Local edit that needs a new part";
   failPart=true;
   const beforeFailure=liveEnvelope.ciphertext,priorWrites=writes;
   await assert.rejects(()=>publishLiveDraft(changed,ring),/500|upload interrupted|Drive/);
@@ -370,7 +381,10 @@ test("linked vault files reuse unchanged trips and large attachments, restore of
  downloads=0;
  await readDriveParts(next.document,ring,async id=>{downloads++;return files.get(id)!;});
  assert.equal(downloads,0,"later loads reuse the encrypted files");
- assert.deepEqual((await readDriveParts(await encrypt(vault,ring),ring,async()=>{throw new Error("legacy snapshot");})).vault,vault);
+ const legacy=await encrypt(vault,ring);
+ await assert.rejects(()=>readDriveParts(legacy,ring,async()=>{throw new Error("legacy snapshot");}),/retired single-file format/);
+ const {decryptWithKey}=await import("../lib/vault");
+ assert.deepEqual((await decryptWithKey(legacy,ring)).vault,vault,"standalone encrypted imports remain readable");
  const deleted={...edited,trips:edited.trips.filter(t=>t.id!=="a"),artifacts:[],deletedTripIds:["a"]};
  uploads=0;const deletion=await prepareDriveParts(deleted,ring,next.index,create);
  assert.equal(uploads,0,"deletion only changes the index");

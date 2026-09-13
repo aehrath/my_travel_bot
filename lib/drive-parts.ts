@@ -32,9 +32,9 @@ export async function prepareDriveParts(vault:Vault,ring:Keyring,previous:VaultI
  return {index,document:await encryptPayload(index,ring)};
 }
 
-export async function readDriveParts(document:Envelope,ring:Keyring,download:(id:string)=>Promise<Envelope>):Promise<{vault:Vault;index:VaultIndex|null}>{
+export async function readDriveParts(document:Envelope,ring:Keyring,download:(id:string)=>Promise<Envelope>):Promise<{vault:Vault;index:VaultIndex}>{
  const payload=await decryptPayload(document,ring);
- if((payload as {format?:string})?.format!=="travel-vault-index")return {vault:vaultSchema.parse(payload),index:null};
+ if((payload as {format?:string})?.format!=="travel-vault-index")throw new Error("This Drive file uses the retired single-file format. Your local changes are kept.");
  const index=indexSchema.parse(payload);
  const seen=new Set<string>();
  const parts=await boundedMap(index.parts,async ref=>{

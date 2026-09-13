@@ -1,10 +1,9 @@
 "use client";
 import {useEffect,useRef,useState} from "react";
-import {listBackups,pullBackup,isDriveConnected,driveSessionVersion} from "./drive";
+import {isDriveConnected,driveSessionVersion} from "./drive";
 import {useDriveConnection} from "./use-drive-connection";
 import {readLatestDriveDraft,rememberDriveBase} from "./drive-live-sync";
-import {collectDriveAdditions,type SeenDriveCopies} from "./drive-additions";
-import {readLocalSetting,writeLocalSetting,type Envelope,type Keyring,type RemovedVaultRecords} from "./vault";
+import {type Envelope,type Keyring} from "./vault";
 import type {Vault} from "./travel";
 // Import is additive and is committed by the app with its usual atomic revision guard.
 export function useAutomaticDriveImport(envelope:Envelope|undefined,ring:Keyring|null,vault:Vault,enabled:boolean,apply:(vault:Vault,expected:Envelope)=>Promise<boolean>){
@@ -25,25 +24,14 @@ export function useAutomaticDriveImport(envelope:Envelope|undefined,ring:Keyring
    running.current=true;
    setStatus("Checking Google Drive for trips from your other devices…");
    try{
-    const latestRemote=await readLatestDriveDraft(start.vault,start.ring,false);
-    let result:{vault:Vault;seen:SeenDriveCopies;issues:{id:string;message:string}[]}={vault:latestRemote.vault,seen:{},issues:[]};
-    const key="drive-imported-copies:"+start.ring.salt;
-    if(!latestRemote.file){
-    const seen=await readLocalSetting<SeenDriveCopies>(key)??{};
-    const copies=await listBackups(true);
-    const removed=await readLocalSetting<RemovedVaultRecords>("drive-local-removals:"+start.ring.salt)??undefined;
-    result=await collectDriveAdditions(start.vault,start.ring,copies,seen,async id=>{
-     if(!valid())throw new Error("Drive connection changed. Reconnect to continue.");
-     return pullBackup(id);
-    },removed);
-    if(!valid()||!latest.current.enabled||latest.current.envelope?.ciphertext!==start.envelope.ciphertext)return;
-    }
+    const latestRemote=await readLatestDriveDraft(start.vault,start.ring);
+    const result=latestRemote;
     if(!valid()||!latest.current.enabled||latest.current.envelope?.ciphertext!==start.envelope.ciphertext)return;
     if(JSON.stringify(result.vault)!==JSON.stringify(start.vault)){
      if(!await latest.current.apply(result.vault,start.envelope))return;
     }
-    if(valid()){if(latestRemote.envelope)await rememberDriveBase(latestRemote.envelope,latestRemote.file,latestRemote.document);else await writeLocalSetting(key,result.seen);}
-    if(valid())setStatus(result.issues.length?`Added available trips. ${result.issues.length} saved Drive ${result.issues.length===1?"copy could":"copies could"} not be read; retrying automatically. ${result.issues[0].message}`:`Drive checked · ${result.vault.trips.length} ${result.vault.trips.length===1?"trip":"trips"} on this device`);
+    if(valid()){if(latestRemote.envelope)await rememberDriveBase(latestRemote.envelope,latestRemote.file,latestRemote.document);}
+    if(valid())setStatus(latestRemote.index?`Drive checked · Linked-file storage (${latestRemote.index.parts.length} files) · ${result.vault.trips.length} ${result.vault.trips.length===1?"trip":"trips"} on this device`:"No live Drive file · Save to Google Drive to create one");
    }catch(error){if(valid())setStatus("Your local trips are safe · Could not load trips from Google Drive: "+(error instanceof Error?error.message:String(error)));}
    finally{running.current=false;if(retryPending.current){retryPending.current=false;checkCurrent.current?.();}}
   }
