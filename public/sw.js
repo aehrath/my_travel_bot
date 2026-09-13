@@ -20,6 +20,6 @@ self.addEventListener("fetch", event => {
  if(event.request.mode==="navigate"&&url.pathname==="/"){
   event.respondWith(fetch(event.request).then(async response=>{if(response.ok&&!response.redirected)(await caches.open(CACHE)).put("/",response.clone());return response;}).catch(async()=>await caches.match("/")||Response.error()));
  }else if(ASSETS.includes(url.pathname)){
-  event.respondWith(caches.match(event.request).then(cached=>cached||fetch(event.request)));
+  event.respondWith(caches.match(event.request).then(cached=>cached||fetch(event.request).catch(async()=>await caches.match(url.pathname)||Response.error())));
  }
 });

@@ -6,7 +6,7 @@ const result=spawnSync(process.execPath,["scripts/run-framework.mjs","build"],{s
 if(result.status!==0)process.exit(result.status??1);
 const root="dist/client";
 const entries=await readdir(root,{recursive:true,withFileTypes:true});
-const assets=entries.filter(e=>e.isFile()).map(e=>"/"+path.relative(root,path.join(e.parentPath,e.name)).replaceAll("\\","/")).filter(p=>/\.(js|css|woff2?|png|svg|webmanifest)$/.test(p)&&p!=="/sw.js");
+const assets=entries.filter(e=>e.isFile()).map(e=>"/"+path.relative(root,path.join(e.parentPath,e.name)).replaceAll("\\","/")).filter(p=>/\.(m?js|css|woff2?|png|svg|webmanifest)$/.test(p)&&p!=="/sw.js");
 const hash=createHash("sha256").update(assets.join("\n")).digest("hex").slice(0,12);
 const sw=(await readFile("public/sw.js","utf8")).replace("/* PRECACHE */ []",JSON.stringify(assets)).replace("travel-shell-v1","travel-shell-"+hash);
 await writeFile(path.join(root,"sw.js"),sw);

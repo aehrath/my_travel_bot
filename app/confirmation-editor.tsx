@@ -1,7 +1,7 @@
 "use client";
 import { useRef } from "react";
 
-const allowed=new Set(["TABLE","THEAD","TBODY","TFOOT","TR","TD","TH","P","DIV","BR","STRONG","B","EM","I","UL","OL","LI"]);
+const allowed=new Set(["TABLE","THEAD","TBODY","TFOOT","TR","TD","TH","P","DIV","BR","STRONG","B","EM","I","UL","OL","LI","H1","H2","H3","H4","H5","H6","SECTION","ARTICLE","BLOCKQUOTE"]);
 const discard=new Set(["SCRIPT","STYLE","IFRAME","OBJECT","EMBED","SVG","MATH","IMG","LINK","META","NOSCRIPT","TEMPLATE"]);
 function safeFragment(html:string):DocumentFragment {
  const parsed=new DOMParser().parseFromString(html,"text/html"),fragment=document.createDocumentFragment();
@@ -25,7 +25,7 @@ function textForImport(node:Node):string {
   return "\n"+rows.map((row,i)=>"| "+row.join(" | ")+" |"+(i===0?"\n| "+row.map(()=>"---").join(" | ")+" |":"")).join("\n")+"\n";
  }
  const text=Array.from(node.childNodes).map(textForImport).join("");
- return /^(P|DIV|LI|UL|OL)$/.test(node.tagName)?text+"\n":text;
+ return /^(P|DIV|LI|UL|OL|H[1-6]|SECTION|ARTICLE|BLOCKQUOTE)$/.test(node.tagName)?text+"\n":text;
 }
 export function ConfirmationEditor({onChange,disabled=false}:{onChange:(text:string)=>void;disabled?:boolean}){
  const editor=useRef<HTMLDivElement>(null);

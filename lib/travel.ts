@@ -6,11 +6,14 @@ export const localDate = (d: Date) => [d.getFullYear(), String(d.getMonth()+1).p
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v=>{const n=Date.parse(v+"T00:00:00Z");return Number.isFinite(n)&&new Date(n).toISOString().slice(0,10)===v;},"Invalid calendar date");
 const time = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
 const zone = z.string().refine(v => {try {new Intl.DateTimeFormat("en",{timeZone:v});return true;}catch{return false;}}, "Use an IANA time zone, such as Europe/Rome");
-export const kinds = ["Flight","Hotel","Rental car","Excursion","Other"] as const;
+export const kinds = ["Flight","Hotel","Rental car","Shuttle","Cruise","Ferry","Excursion","Other"] as const;
 export const reservationNameFields:Record<(typeof kinds)[number],{label:string;placeholder:string}>={
  Flight:{label:"Flight name",placeholder:"Flight SFO → NAN"},
  Hotel:{label:"Hotel / property name",placeholder:"e.g. Coral Coast Resort"},
  "Rental car":{label:"Rental car reservation name",placeholder:"e.g. Hertz · Nadi airport pick-up"},
+ Cruise:{label:"Cruise reservation name",placeholder:"e.g. Yasawa Islands cruise"},
+ Ferry:{label:"Ferry reservation name",placeholder:"e.g. Port Denarau to Waya Island"},
+ Shuttle:{label:"Shuttle reservation name",placeholder:"e.g. Dans Shuttle for SSC AM"},
  Excursion:{label:"Excursion / activity name",placeholder:"e.g. Sunset cruise"},
  Other:{label:"Reservation name",placeholder:"e.g. Airport transfer or dinner reservation"},
 };
@@ -18,25 +21,46 @@ export const reservationTimeLabels:Record<(typeof kinds)[number],{start:string;e
  Flight:{start:"Departure",end:"Arrival"},
  Hotel:{start:"Check-in",end:"Check-out"},
  "Rental car":{start:"Pick-up",end:"Drop-off"},
+ Cruise:{start:"Departure",end:"Arrival"},
+ Ferry:{start:"Departure",end:"Arrival"},
+ Shuttle:{start:"Departure",end:"Arrival"},
  Excursion:{start:"Excursion start",end:"Excursion end"},
  Other:{start:"Start",end:"End"},
 };
+export function normalizeProviderUrl(value:string):string {
+ const trimmed=value.trim();
+ if(!trimmed)return "";
+ if(trimmed.startsWith("//"))return "https:"+trimmed;
+ if(/^[a-z][a-z0-9+.-]*:/i.test(trimmed))return trimmed;
+ return "https://"+trimmed;
+}
 export const paymentSchema = z.object({id:z.string(),amount:z.number().positive().finite(),date,note:z.string()});
 export const bookingSchema = z.object({
  id:z.string(),tripId:z.string(),kind:z.enum(kinds),title:z.string().trim().min(1).max(300),start:time,end:time,zone,endZone:zone,
  airline:z.string().max(300).default(""),flightNumber:z.string().max(30).default(""),
  fromAirport:z.string().max(300).default(""),toAirport:z.string().max(300).default(""),
- location:z.string(),confirmation:z.string(),notes:z.string(),url:z.string().refine(v=>!v||/^https?:\/\//i.test(v),"Use an https:// or http:// link"),
+ location:z.string(),confirmation:z.string(),notes:z.string(),url:z.string().transform(normalizeProviderUrl).refine(v=>{if(!v)return true;try{const parsed=new URL(v);return ["https:","http:"].includes(parsed.protocol)&&!!parsed.hostname;}catch{return false;}},"Enter a valid website address"),
  total:z.number().nonnegative().finite(),currency:z.string().regex(/^[A-Z]{3}$/).refine(v=>{try{new Intl.NumberFormat("en",{style:"currency",currency:v});return true;}catch{return false;}}),
+ dueDaysBefore:z.number().int().min(0).max(36500).nullable().optional(),
  due:z.union([date,z.literal("")]),payments:z.array(paymentSchema),
-}).superRefine((b,c)=>{try{if(instant(b.end,b.endZone)<instant(b.start,b.zone))c.addIssue({code:"custom",message:"End must be after start"});}catch(e){c.addIssue({code:"custom",message:String(e)});}if(paid(b)>b.total+0.005)c.addIssue({code:"custom",message:"Payments exceed the reservation total"});});
+}).transform(b=>({...b,due:balanceDueDate(b)})).superRefine((b,c)=>{if(b.dueDaysBefore!=null&&!date.safeParse(b.due).success)c.addIssue({code:"custom",message:"Enter a valid check-in date and whole number of days before it"});try{if(instant(b.end,b.endZone)<instant(b.start,b.zone))c.addIssue({code:"custom",message:"End must be after start"});}catch(e){c.addIssue({code:"custom",message:String(e)});}if(paid(b)>b.total+0.005)c.addIssue({code:"custom",message:"Payments exceed the reservation total"});});
 export type Booking=z.infer<typeof bookingSchema>;
+// Subtract calendar days from the reservation's local date, independent of DST.
+export function balanceDueDate(b:{start:string;due:string;dueDaysBefore?:number|null}):string {
+ if(b.dueDaysBefore==null)return b.due;
+ const start=b.start.slice(0,10);
+ if(!date.safeParse(start).success||!Number.isInteger(b.dueDaysBefore)||b.dueDaysBefore<0||b.dueDaysBefore>36500)return "";
+ const day=new Date(start+"T00:00:00Z");
+ day.setUTCDate(day.getUTCDate()-b.dueDaysBefore);
+ const result=day.toISOString().slice(0,10);
+ return date.safeParse(result).success?result:"";
+}
 export function updateReservationTime(b:Booking,key:"start"|"end",value:string):Booking {
  const next={...b,[key]:value};
  if(key==="start"&&/^\d{4}-\d{2}-\d{2}T/.test(value)&&value.slice(0,10)!==b.start.slice(0,10)){
   next.end=value.slice(0,10)+"T"+(b.end.slice(11)||"10:00");
  }
- return next;
+ return {...next,due:balanceDueDate(next)};
 }
 export function flightReservationName(b:Pick<Booking,"fromAirport"|"toAirport">):string {
  const short=(value:string)=>/^([A-Z]{3})(?:\s+—|$)/.exec(value.trim())?.[1]||value.trim().slice(0,120);
@@ -50,7 +74,7 @@ export function prefillFlightName(previous:Booking,next:Booking):Booking {
 }
 export const tripSchema=z.object({id:z.string(),name:z.string().trim().min(1),destination:z.string(),notes:z.string()});
 export const artifactSchema=z.object({id:z.string(),tripId:z.string(),bookingId:z.string(),name:z.string(),type:z.string(),data:z.string(),size:z.number().nonnegative(),added:date});
-export const vaultSchema=z.object({version:z.literal(1),trips:z.array(tripSchema),bookings:z.array(bookingSchema),artifacts:z.array(artifactSchema)}).superRefine((v,c)=>{
+export const vaultSchema=z.object({version:z.literal(1),trips:z.array(tripSchema),bookings:z.array(bookingSchema),artifacts:z.array(artifactSchema),deletedTripIds:z.array(z.string().min(1)).optional()}).superRefine((v,c)=>{
  const ids=[...v.trips,...v.bookings,...v.artifacts].map(x=>x.id);
  if(new Set(ids).size!==ids.length)c.addIssue({code:"custom",message:"Duplicate record IDs"});
  if(v.bookings.some(b=>!v.trips.some(t=>t.id===b.tripId))||v.artifacts.some(a=>!v.trips.some(t=>t.id===a.tripId)||(a.bookingId&&!v.bookings.some(b=>b.id===a.bookingId&&b.tripId===a.tripId))))c.addIssue({code:"custom",message:"Document or reservation references a missing trip"});
@@ -68,7 +92,47 @@ export function instant(local:string,tz:string):number{
  for(let i=0;i<4;i++){const parts=Object.fromEntries(fmt.formatToParts(value).map(x=>[x.type,x.value]));const rendered=Date.UTC(+parts.year,+parts.month-1,+parts.day,+parts.hour,+parts.minute,+parts.second);const delta=target-rendered;if(!delta)return value;value+=delta;}
  throw new Error("This local time does not exist because of daylight saving time");
 }
-export const stamp=(b:Booking)=>new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",timeZone:b.zone}).format(instant(b.start,b.zone));
+export function reservationDuration(b:Pick<Booking,"kind"|"start"|"end"|"zone"|"endZone">):string {
+ try {
+  const elapsed=instant(b.end,b.endZone)-instant(b.start,b.zone);
+  if(elapsed<0)return "Duration unavailable";
+  if(b.kind==="Hotel"){
+   const nights=Math.round((Date.parse(b.end.slice(0,10)+"T00:00:00Z")-Date.parse(b.start.slice(0,10)+"T00:00:00Z"))/86400000);
+   return nights>=0?`${nights} ${nights===1?"night":"nights"}`:"Duration unavailable";
+  }
+  let minutes=Math.round(elapsed/60000);
+  const parts:string[]=[];
+  if(b.kind!=="Flight"&&minutes>=1440){
+   const days=Math.floor(minutes/1440);
+   parts.push(`${days} ${days===1?"day":"days"}`);
+   minutes%=1440;
+  }
+  const hours=Math.floor(minutes/60);
+  if(hours)parts.push(`${hours} ${hours===1?"hr":"hrs"}`);
+  if(minutes%60||!parts.length)parts.push(`${minutes%60} min`);
+  return parts.join(" ");
+ }catch{return "Duration unavailable";}
+}
+// Hotel check-in is an availability time; show that stay after the journey there.
+export function itineraryOrder(bookings:Booking[]):Booking[] {
+ const orderTime=(b:Booking)=>{
+  const start=instant(b.start,b.zone);
+  if(b.kind!=="Hotel")return start;
+  const arrivals=bookings.filter(other=>other.tripId===b.tripId
+   &&(other.kind==="Flight"||other.kind==="Shuttle"||other.kind==="Cruise"||other.kind==="Ferry")
+   &&other.endZone===b.zone&&other.end.slice(0,10)===b.start.slice(0,10));
+  return arrivals.reduce((time,arrival)=>Math.max(time,instant(arrival.end,arrival.endZone)),start);
+ };
+ const keyed=bookings.map((booking,index)=>({booking,index,time:orderTime(booking)}));
+ return keyed.sort((a,b)=>a.time-b.time
+  ||Number(a.booking.kind==="Hotel")-Number(b.booking.kind==="Hotel")
+  ||a.index-b.index).map(item=>item.booking);
+}
+export const stamp=(b:Booking,key:"start"|"end"="start")=>{
+ const zone=key==="start"?b.zone:b.endZone;
+ const showDate=key==="start"||b.start.slice(0,10)!==b.end.slice(0,10);
+ return new Intl.DateTimeFormat("en-US",{...(showDate?{month:"short" as const,day:"numeric" as const}:{}),...(b.start.slice(0,4)!==b.end.slice(0,4)?{year:"numeric" as const}:{}),hour:"numeric",minute:"2-digit",timeZone:zone}).format(instant(b[key],zone));
+};
 export function blankBooking(tripId:string):Booking {return {id:uid(),tripId,kind:"Flight",title:"",airline:"",flightNumber:"",fromAirport:"",toAirport:"",start:today()+"T09:00",end:today()+"T10:00",zone:Intl.DateTimeFormat().resolvedOptions().timeZone,endZone:Intl.DateTimeFormat().resolvedOptions().timeZone,location:"",confirmation:"",notes:"",url:"",total:0,currency:"USD",due:"",payments:[]};}
 export const bookingLocation=(b:Booking)=>b.kind==="Flight"&&(b.fromAirport||b.toAirport)?[b.fromAirport||"Departure not set",b.toAirport||"Arrival not set"].join(" → "):b.location;
 const esc=(s:string)=>s.replace(/\\/g,"\\\\").replace(/\r?\n/g,"\\n").replace(/,/g,"\\,").replace(/;/g,"\\;");

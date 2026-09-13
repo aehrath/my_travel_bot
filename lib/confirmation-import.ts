@@ -143,6 +143,67 @@ function hotelConfirmation(text:string,tripId:string):Booking[]|null {
  // Missing payment dates/time zones remain explicit review requirements. Saving validates them.
  return [b];
 }
+function hotelBookingConfirmation(text:string,tripId:string):Booking[]|null {
+ // Email HTML often places bold labels directly beside their values without whitespace.
+ const plain=clean(text).replace(/Hotel\s+Booking\s+Reference/gi," Hotel Booking Reference ").replace(/Check[ -]?(in|out)/gi," Check $1 ").replace(/Reservation\s+information/gi," Reservation information ");
+ const flat=plain.replace(/\s+/g," ");
+ if(!/\bHotel Booking Reference\b/i.test(flat)||!/\bCheck[ -]?in\b/i.test(flat)||!/\bCheck[ -]?out\b/i.test(flat))return null;
+ // Only the stay section defines arrival/departure. Later fee prose may also say check-in.
+ const stay=flat.split(/\bReservation information\b/i)[0];
+ const labels=[...stay.matchAll(/\bCheck[ -]?(in|out)\b/gi)];
+ if(labels.length!==2||labels[0][1].toLowerCase()!=="in"||labels[1][1].toLowerCase()!=="out")throw new Error("Include one hotel check-in and one check-out section in that order.");
+ function endpoint(index:number){
+  const section=stay.slice(labels[index].index!+labels[index][0].length,index===0?labels[1].index:undefined);
+  const match=/^\s*:?\s*(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s*(\d{1,2})\s*(January|February|March|April|May|June|July|August|September|October|November|December)\s*(\d{4})\s*(\d{1,2}):(\d{2})(?:\s*(AM|PM))?\b/i.exec(section);
+  const label=index===0?"check-in":"check-out";
+  if(!match)throw new Error(`Could not read hotel ${label}. Include weekday, day, month, year and local time.`);
+  const date=`${match[4]}-${String(months.indexOf(match[3].slice(0,3).toLowerCase())+1).padStart(2,"0")}-${match[2].padStart(2,"0")}`;
+  const parsed=new Date(date+"T00:00:00Z");
+  if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==date||["sun","mon","tue","wed","thu","fri","sat"][parsed.getUTCDay()]!==match[1].slice(0,3).toLowerCase())throw new Error(`Hotel ${label} date and weekday disagree. Review the supplied date.`);
+  let hour=Number(match[5]);
+  if(Number(match[6])>59||hour>(match[7]?12:23)||(match[7]&&hour<1))throw new Error(`Invalid hotel ${label} time.`);
+  if(match[7])hour=hour%12+(match[7].toUpperCase()==="PM"?12:0);
+  return date+"T"+String(hour).padStart(2,"0")+":"+match[6];
+ }
+ const start=endpoint(0),end=endpoint(1);
+ if(end.slice(0,10)<=start.slice(0,10))throw new Error("Hotel checkout must be after check-in.");
+ const title=(/\bhotel booking at\s+(.+?)\s+(?:for\s+.+?\s+)?is confirmed\b/i.exec(flat)?.[1]||/\bReservation information\s*:?\s*\n([^\n]+)/i.exec(plain)?.[1]||/\bReservation information\s*:?\s*(.+)$/i.exec(flat)?.[1]||"").trim();
+ if(!title)throw new Error("The hotel property name is missing.");
+ const confirmation=/\bHotel Booking Reference\s*:?\s*([A-Z0-9-]+(?:\s*\([A-Z0-9-]+\))?)/i.exec(flat)?.[1]||"";
+ // Infer only from city names inside the property name, never the guest or event text.
+ const cities=[...new Set(airports.map(a=>a.city))].filter(city=>city.length>=4&&new RegExp("\\b"+city.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\b","i").test(title));
+ const longest=cities.filter(city=>!cities.some(other=>other.length>city.length&&other.toLowerCase().includes(city.toLowerCase())));
+ const zones=[...new Set(airports.filter(a=>longest.includes(a.city)).map(a=>a.zone))];
+ // Los Angeles also names a city in Chile. This exact property is verified in California:
+ // https://www.marriott.com/en-us/hotels/laxox-moxy-downtown-los-angeles/overview/
+ const knownPropertyZone=/^Moxy Downtown Los Angeles$/i.test(title)?"America/Los_Angeles":"";
+ const zone=knownPropertyZone||(zones.length===1?zones[0]:"");
+ const location=longest.length===1?longest[0]:"";
+ const nights=/\bNights\s*:?\s*(\d+)\b/i.exec(flat);
+ if(nights&&Number(nights[1])!==(Date.parse(end.slice(0,10))-Date.parse(start.slice(0,10)))/86400000)throw new Error("Hotel stay dates disagree with the number of nights. Review the confirmation.");
+ const quoted=/(?:^|[^\w-])Total\s*:?\s*(?:([A-Z]{3})\s*)?[$€£]?\s*(\d[\d,]*\.\d{2})\b/i.exec(flat);
+ const cents=(value:string)=>Math.round(Number(value.replace(/,/g,""))*100);
+ const subtotal=/\bSub[- ]?total\s*:?\s*(?:[A-Z]{3}\s*)?[$€£]?\s*(\d[\d,]*\.\d{2})\b/i.exec(flat);
+ const taxes=/\bTaxes\s*:?\s*(?:[A-Z]{3}\s*)?[$€£]?\s*(\d[\d,]*\.\d{2})\b/i.exec(flat);
+ const fee=/\bPlus hotel fees\s*:?\s*(?:([A-Z]{3})\s*)?\$?\s*(\d[\d,]*\.\d{2})\b/i.exec(flat);
+ const warnings=[zone?`Time zone inferred from the hotel location: ${zone}; confirm it.`:"Select the hotel's time zone before importing."];
+ let total=0,currency="USD";
+ if(quoted){
+  if(!quoted[1])throw new Error("Include the three-letter currency code beside the hotel total.");
+  currency=quoted[1].toUpperCase();total=cents(quoted[2]);
+  if(subtotal&&taxes&&cents(subtotal[1])+cents(taxes[1])!==total)throw new Error("Hotel subtotal and taxes do not match the quoted total. Review the amounts.");
+  warnings.push(`Quoted total: ${currency} ${(total/100).toFixed(2)}${taxes?` (including ${(cents(taxes[1])/100).toFixed(2)} taxes)`:""}.`);
+  if(fee){
+   if(fee[1]&&fee[1].toUpperCase()!==currency)throw new Error("Hotel fees use a different currency. Review the amounts before importing.");
+   const amount=cents(fee[2]);total+=amount;
+   warnings.push(`Additional hotel fee: ${currency} ${(amount/100).toFixed(2)}, included once in the reservation total; confirm whether it applies per stay or per night. The confirmation says additional mandatory charges are collected at check-in.`);
+  }
+  warnings.push("No payment or deadline for the full balance was supplied; no payment has been recorded.");
+ }else warnings.push("No cost, payment or balance deadline was supplied; add them if known.");
+ const booking:Booking={...blankBooking(tripId),kind:"Hotel",title,location,confirmation,start,end,zone,endZone:zone,total:total/100,currency,notes:"Import review: "+warnings.join(" ")+"\n\n"+text};
+ bookingSchema.parse({...booking,zone:zone||"UTC",endZone:zone||"UTC"});
+ return [booking];
+}
 function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):Booking[]|null {
  const plain=clean(text);
  if(!/\bCheck-in\b/i.test(plain)||!/\bCheck-out\b/i.test(plain))return null;
@@ -165,16 +226,90 @@ function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):B
  const clockPattern=/\b\d{1,2}:\d{2}\s*(?:AM|PM)\b/gi;
  const times=[...stay.matchAll(clockPattern)];
  if(times.length!==2)throw new Error("Could not identify both check-in and checkout times. Include each local time with AM/PM.");
- const location=stay.slice(0,stay.search(/\bCheck-in\b/i)).trim();
+ const beforeStay=stay.slice(0,stay.search(/\bCheck-in\b/i)).trim();
+ // Expedia puts traveler counts before the address, separated by empty table cells.
+ // Require a street suffix so an itinerary number or guest count cannot become the address.
+ const street=/\b\d+[A-Za-z]?\s+(?:[A-Za-z][A-Za-z.'’-]*\s+){1,6}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Highway|Hwy|Court|Ct|Place|Pl)\b[\s\S]*$/i.exec(beforeStay)?.[0];
+ const location=(street||beforeStay).replace(/\s+/g," ").trim();
+ const itinerary=/\bExpedia itinerary\s*:\s*([A-Z0-9-]+)/i.exec(beforeStay);
+ const propertyName=itinerary?beforeStay.slice(0,itinerary.index).trim().split("\n").at(-1)?.trim()||"":"";
+ const title=propertyName||("Hotel stay"+(location?" · "+location:" · "+startDate)).slice(0,300);
  const regionNames=new Intl.DisplayNames(["en"],{type:"region"});
  const countries=[...new Set(airports.map(a=>a.country))].filter(code=>{try{const name=regionNames.of(code);return name&&new RegExp(`\\b${name}\\b`,"i").test(location);}catch{return false;}});
  const zones=[...new Set(airports.filter(a=>countries.includes(a.country)).map(a=>a.zone))];
- const zone=zones.length===1?zones[0]:"";
+ const cityZones=[...new Set(airports.filter(a=>countries.includes(a.country)&&a.city&&new RegExp("\\b"+a.city.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\b","i").test(location)).map(a=>a.zone))];
+ const zone=cityZones.length===1?cityZones[0]:zones.length===1?zones[0]:"";
  warnings.push(zone?`Time zone inferred from the property address: ${zone}; confirm it.`:"Property time zone could not be determined; enter it before importing.");
- warnings.push("Property name and cost are absent. A provisional name uses the address; rename it and add the cost when known. The cancellation deadline is retained in notes, not used as a payment due date.");
- return [{...blankBooking(tripId),kind:"Hotel",title:("Hotel stay"+(location?" · "+location:" · "+startDate)).slice(0,300),location,start:startDate+"T"+clock(times[0][0]),end:endDate+"T"+clock(times[1][0]),zone,endZone:zone,notes:"Import review: "+warnings.join(" ")+"\n\n"+text}];
+ if(!propertyName)warnings.push("Property name is absent. A provisional name uses the address; rename it when known.");
+ warnings.push("Cost is absent; add it when known. The cancellation deadline is retained in notes, not used as a payment due date.");
+ return [{...blankBooking(tripId),kind:"Hotel",title,location,confirmation:itinerary?.[1]||"",start:startDate+"T"+clock(times[0][0]),end:endDate+"T"+clock(times[1][0]),zone,endZone:zone,notes:"Import review: "+warnings.join(" ")+"\n\n"+text}];
+}
+function shuttleConfirmation(text:string,tripId:string):Booking[]|null {
+ const plain=clean(text);
+ if(!/\bshuttle\b/i.test(plain)||!/\bDepart\s*:/i.test(plain))return null;
+ const dateTime="(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{1,2}),?\\s+(\\d{4})\\s+(\\d{1,2}:\\d{2}\\s*(?:AM|PM))";
+ function endpoint(label:string){
+  const matches=[...plain.matchAll(new RegExp("\\b"+label+"\\s*:\\s*"+dateTime,"gi"))];
+  if(matches.length!==1)throw new Error(`Include one shuttle ${label.toLowerCase()} date and time, with weekday, month, day, year and AM/PM.`);
+  const m=matches[0];
+  const date=`${m[4]}-${String(months.indexOf(m[2].slice(0,3).toLowerCase())+1).padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+  const parsed=new Date(date+"T00:00:00Z");
+  if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==date||["sunday","monday","tuesday","wednesday","thursday","friday","saturday"][parsed.getUTCDay()]!==m[1].toLowerCase())throw new Error("Shuttle date and weekday disagree. Check the departure and arrival dates.");
+  return {local:date+"T"+clock(m[5]),match:m};
+ }
+ const departure=endpoint("Depart"),arrival=endpoint("Arrive");
+ if(arrival.local<=departure.local)throw new Error("Shuttle arrival must be after departure. Include the arrival date if it ends on another day.");
+ const heading=plain.slice(0,departure.match.index).trim();
+ const reference=/\(([A-Z0-9-]+)\)\s*$/.exec(heading)?.[1]||"";
+ const title=heading.replace(/\s*\([A-Z0-9-]+\)\s*$/,"").trim();
+ if(!title)throw new Error("The shuttle reservation name is missing.");
+ const afterArrival=plain.slice(arrival.match.index!+arrival.match[0].length);
+ const extraReference=afterArrival.split(/\bStarts\b|\bAddress\b/i)[0].trim();
+ const references=[reference,/^[A-Z0-9-]{4,30}$/.test(extraReference)?extraReference:""].filter(Boolean);
+ const location=/\bAddress\s*:?\s*([\s\S]*?)(?=Get Directions\b|$)/i.exec(plain)?.[1].replace(/\s+/g," ").trim()||"";
+ // Only infer a time zone when the address identifies a country with one zone.
+ const regions=new Intl.DisplayNames(["en"],{type:"region"});
+ const countries=[...new Set(airports.map(a=>a.country))].filter(code=>{try{const name=regions.of(code);return name&&new RegExp(`\\b${name}\\b`,"i").test(location);}catch{return false;}});
+ const zones=[...new Set(airports.filter(a=>countries.includes(a.country)).map(a=>a.zone))];
+ const zone=zones.length===1?zones[0]:"";
+ const starts=/\bStarts\s*:?\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i.exec(plain);
+ if(starts&&clock(starts[1])!==departure.local.slice(11))throw new Error("The shuttle Starts time disagrees with its departure time. Review the confirmation.");
+ const warnings=[zone?`Time zone inferred from the pickup address: ${zone}; confirm it.`:"Enter the pickup and arrival time zones before importing.","No cost or payment deadline was supplied; add them if known."];
+ const booking:Booking={...blankBooking(tripId),kind:"Shuttle",title,confirmation:[...new Set(references)].join(" · "),start:departure.local,end:arrival.local,zone,endZone:zone,location,notes:"Import review: "+warnings.join(" ")+"\n\n"+text};
+ return [zone?bookingSchema.parse(booking):booking];
+}
+function southSeaCruiseConfirmation(text:string,tripId:string):Booking[]|null {
+ const plain=clean(text);
+ if(!/\bSOUTH SEA CRUISES(?: GROUP)? CONFIRMATION\b/i.test(plain))return null;
+ const sections=plain.split(/\bBooking Ref\s*:\s*/i).slice(1);
+ if(!sections.length)throw new Error("South Sea Cruises booking reference is missing. Include the Booking Ref and sailing details.");
+ const reference=/\bReference\s*:\s*([A-Z0-9-]+)/i.exec(plain)?.[1]||"";
+ return sections.map(section=>{
+  const bookingReference=/^([A-Z0-9-]+)/i.exec(section)?.[1];
+  const schedule=/\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{4})\s+(\d{1,2}:\d{2}\s*(?:AM|PM))\b/i.exec(section);
+  const arrival=/\barriving\s+(\d{1,2}:\d{2}\s*(?:AM|PM))\b/i.exec(section);
+  if(!bookingReference||!schedule||!arrival)throw new Error("Include each cruise's Booking Ref, departure date and time, and arriving time with AM/PM.");
+  const date=`${schedule[3]}-${String(months.indexOf(schedule[2].slice(0,3).toLowerCase())+1).padStart(2,"0")}-${schedule[1].padStart(2,"0")}`;
+  const start=date+"T"+clock(schedule[4]);
+  const end=date+"T"+clock(arrival[1]);
+  if(end<=start)throw new Error("Cruise arrival must be after departure. An overnight sailing needs its arrival date entered manually.");
+  const routeAndService=section.slice(schedule.index+schedule[0].length,arrival.index);
+  const service=/\bTravelling on South Sea Cruises service\s+([A-Z0-9-]+)/i.exec(routeAndService);
+  if(!service)throw new Error("The South Sea Cruises service and route are missing.");
+  const route=routeAndService.slice(0,service.index).trim();
+  if(!/\s+to\s+/i.test(route))throw new Error("Include the cruise departure and arrival ports.");
+  const zone=/\bPort Denarau\b/i.test(route)?"Pacific/Fiji":"";
+  const warnings=[zone?"Time zone inferred as Pacific/Fiji from Port Denarau; confirm it.":"Enter the departure and arrival time zones before importing.","Arrival uses the departure date; confirm this is a same-day sailing.","No price or payment amount was supplied; add them if known."];
+  const b:Booking={...blankBooking(tripId),kind:"Cruise",title:"South Sea Cruises · "+route,location:route,confirmation:[...new Set([bookingReference,reference].filter(Boolean))].join(" · "),start,end,zone,endZone:zone,notes:"Import review: "+warnings.join(" ")+"\nService: "+service[1]+"\n\n"+text};
+  // Validate the dates even when the user still needs to choose time zones.
+  bookingSchema.parse({...b,zone:zone||"UTC",endZone:zone||"UTC"});
+  return b;
+ });
 }
 export function importConfirmation(text:string,tripId:string,referenceDate=today()):Booking[]{
+ const cruise=southSeaCruiseConfirmation(text,tripId);if(cruise)return cruise;
+ const shuttle=shuttleConfirmation(text,tripId);if(shuttle)return shuttle;
+ const hotelBooking=hotelBookingConfirmation(text,tripId);if(hotelBooking)return hotelBooking;
  const stay=hotelStayConfirmation(text,tripId,referenceDate);if(stay)return stay;
  const hotel=hotelConfirmation(text,tripId);if(hotel)return hotel;
  const delta=deltaConfirmation(text,tripId,referenceDate);if(delta)return delta;

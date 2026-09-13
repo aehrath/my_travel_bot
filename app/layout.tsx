@@ -6,9 +6,9 @@ export const metadata: Metadata = {
   description: "Flights, stays, payments, and travel documents in one secure place.",
   manifest: "/manifest.webmanifest",
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
-    apple: "/icon-192.png",
+    icon: "/favicon.svg?v=main-robot-20260913",
+    shortcut: "/favicon.svg?v=main-robot-20260913",
+    apple: "/icon-192.png?v=main-robot-20260913",
   },
 };
 export const viewport: Viewport = { width:"device-width",initialScale:1,themeColor:"#173c34" };

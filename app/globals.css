@@ -19,6 +19,9 @@
 [data-kind="Hotel"]{--category-bg:#dfeee2;--category-text:#285b3c;--category-accent:#43835a}
 [data-kind="Rental car"]{--category-bg:#ece2f7;--category-text:#654080;--category-accent:#8860a8}
 [data-kind="Excursion"]{--category-bg:#f8dfd7;--category-text:#8a3d27;--category-accent:#bc6447}
+[data-kind="Shuttle"]{--category-bg:#d7eeec;--category-text:#245c58;--category-accent:#39857e}
+[data-kind="Cruise"]{--category-bg:#e1e6fa;--category-text:#3e4781;--category-accent:#6977ba}
+[data-kind="Ferry"]{--category-bg:#d9edf5;--category-text:#245b73;--category-accent:#448ba8}
 [data-kind="Other"]{--category-bg:#e6e8ec;--category-text:#465162;--category-accent:#788394}
 .calendarPaymentKey{background:#fae8ba;color:#795715;border-left:3px solid #b98521}
 
@@ -27,3 +30,62 @@
 .dayDate{text-align:left;width:100%;min-height:28px}.dayDate>span{display:inline-block}.calEvent,.calDue,.calMore{text-align:left;min-height:28px;cursor:pointer}.calEvent:hover,.calDue:hover,.calMore:hover{text-decoration:underline}.day button:focus-visible{outline:2px solid #173c34;outline-offset:2px}.calMore{font-size:.75rem}
 
 .reservationDetailTabs{height:auto!important;display:flex;flex-wrap:wrap}.reservationDetailTabs [data-slot=tabs-trigger]{flex:1 1 100px}
+
+.attachmentDialog{width:calc(100vw - 32px)!important;max-width:1100px!important;max-height:94dvh;overflow-y:auto}
+.attachmentPdf{width:100%;height:65dvh;min-height:260px;border:1px solid var(--line);border-radius:8px;background:#f0f0f0}
+.attachmentImage{display:block;max-width:100%;max-height:65dvh;object-fit:contain;margin:auto;border-radius:6px}
+
+/* Reservation strips retain their category color and endpoint times. */
+.calendarScroll{max-width:100%;overflow-x:auto;padding-bottom:4px}
+.calendarScrollHint{display:none}
+.calendarEvents{display:grid;gap:4px;min-width:0}
+.calendarEvents:empty{display:none}
+.calendarEvents .calEvent{display:flex;align-items:flex-start;gap:5px;min-width:0;min-height:36px;padding:5px;line-height:1.3}
+.calendarEvents .calEvent svg{flex:0 0 16px;margin-top:1px}
+.calendarEventText{min-width:0;display:grid;gap:2px}
+.calendarEventTitle{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:800}
+.calendarEventTime{white-space:normal;font-size:.6875rem}
+.calendarCategory{display:inline-flex;align-items:center;gap:5px}
+.calendarCategory svg{flex-shrink:0}
+
+/* Allow controls to wrap without forcing their panels wider than the phone. */
+.panel,.stack,.documentCard,.topbar>div,.panelTitle>*,[data-slot=tabs],[data-slot=tabs-content]{min-width:0}
+.actions{max-width:100%}
+.actions>button,.actions>a{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.primary svg,.secondary svg,.danger svg,.textButton svg{flex-shrink:0}
+.choose{min-width:0;height:auto;white-space:normal;text-align:left}
+.choose [data-slot=select-value]{min-width:0;overflow-wrap:anywhere;line-clamp:unset;-webkit-line-clamp:unset}
+[data-slot=tabs-list]{height:auto;flex-wrap:wrap;gap:4px}
+[data-slot=tabs-trigger]{height:auto;min-width:0;min-height:40px;flex:1 1 120px;white-space:normal}
+.reservationDate,.paymentNumbers>span{min-width:0;overflow-wrap:anywhere}
+@media(max-width:767px){
+ .topbar .actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+ .actions>button,.actions>a{flex:1 1 120px}
+ .calendarNavigation>button{flex:0 0 auto}
+ .calendarScroll .calendarGrid{min-width:840px;margin-left:0;margin-right:0}
+ .calendarScrollHint{display:block;margin-top:12px}
+ .day{padding:5px;min-height:100px}
+ .attention>span:first-child{flex-basis:100%}
+ .paymentHistory>div{flex-wrap:wrap}
+ .reservationRow{grid-template-columns:34px minmax(0,1fr)}
+ .pill{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+}
+
+.rememberDevice{display:flex;align-items:flex-start;gap:10px;font-size:.875rem;font-weight:750}.rememberDevice input{margin-top:4px;flex-shrink:0;width:18px;height:18px}.rememberDevice small{margin-top:5px;font-weight:400}
+.pdfPreview{min-width:0}.pdfPreview canvas{display:block;width:100%;height:auto;background:white;margin-top:12px}.pdfNavigation{justify-content:space-between}.pdfNavigation>button{flex:0 0 auto}.pdfNavigation>span{font-size:.8125rem}
+
+.settingsGrid:has(.sharedInvitation){display:block}.settingsGrid:has(.sharedInvitation)>:not(.sharedInvitation){display:none}.sharedInvitation{max-width:560px;margin:24px auto!important}.sharedInvitation h2{font-size:2rem}.sharedInvitation .primary,.sharedInvitation .secondary{width:100%;margin-bottom:16px}
+
+.documentViewer{min-width:0;display:grid;gap:8px}.documentZoomControls{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}.documentZoomControls output{min-width:48px;text-align:center;font-size:.875rem;font-weight:800}.documentViewport{position:relative;width:100%;height:55dvh;min-height:180px;max-height:650px;overflow:hidden;touch-action:none;overscroll-behavior:contain;user-select:none;-webkit-user-select:none;background:#e6e5e1;border:1px solid var(--line);border-radius:8px;cursor:grab}.documentViewport:active{cursor:grabbing}.documentZoomContent{width:100%;position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}.documentZoomContent .attachmentImage,.documentZoomContent canvas{display:block;width:100%;height:auto;max-width:none;max-height:none;margin:0;border-radius:0;pointer-events:none}.documentZoomContent img{-webkit-user-drag:none}
+
+.tripCard.selectedTrip{background:var(--accent);border-radius:8px;padding:16px 12px}.tripCard>button:first-child{width:100%;min-width:0}.tripCard>button:first-child>span{min-width:0;overflow-wrap:anywhere}
+
+.brandMark.robotBrand{width:48px;height:48px;flex-shrink:0;background:transparent}.robotBrand img{width:100%;height:100%}.sidebarRobot{display:block;width:100px;height:100px;margin:0 auto 12px}.pageHeading{display:flex;align-items:center;gap:16px;min-width:0}.pageHeading>div{min-width:0}.headingRobot{width:100px;height:100px;object-fit:contain;flex-shrink:0}.welcomeRobot{width:130px;height:130px;object-fit:contain;margin:auto}@media(max-width:767px){.headingRobot{width:64px;height:64px}.pageHeading{gap:10px;width:100%}}
+
+.tripPermissionRow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}.tripPermissionRow>span{min-width:0;overflow-wrap:anywhere}.tripPermissionRow .actions{flex-wrap:nowrap;flex-shrink:0}@media(max-width:480px){.tripPermissionRow{flex-wrap:wrap}.tripPermissionRow .actions{width:100%}.tripPermissionRow .actions button{flex:1}}
+
+.tripActions{display:flex;flex-wrap:wrap;align-items:center;gap:8px 24px;margin-top:8px}.tripActions>.textButton{min-height:44px;padding:4px 2px;white-space:nowrap}
+
+.cloudSyncStatus{margin:12px 20px 0;font-size:.85rem;overflow-wrap:anywhere;color:var(--foreground);}
+
+.cloudSyncStatus{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.cloudSyncStatus p{margin:0;flex:1 1 240px}.cloudSyncStatus button{flex-shrink:0}
