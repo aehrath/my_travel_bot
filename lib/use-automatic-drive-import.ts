@@ -4,6 +4,7 @@ import {isDriveConnected,driveSessionVersion} from "./drive";
 import {useDriveConnection} from "./use-drive-connection";
 import {readLatestDriveDraft,rememberDriveBase,chooseDriveConflict,acknowledgeDriveConflict,type DriveConflict} from "./drive-live-sync";
 import {type Envelope,type Keyring} from "./vault";
+import {vaultDifferences} from "./vault-diff";
 import type {Vault} from "./travel";
 // Import is additive and is committed by the app with its usual atomic revision guard.
 export function useAutomaticDriveImport(envelope:Envelope|undefined,ring:Keyring|null,vault:Vault,enabled:boolean,apply:(vault:Vault,expected:Envelope)=>Promise<Envelope|false>,reconciled:(envelope:Envelope)=>Promise<void>){
@@ -28,14 +29,14 @@ export function useAutomaticDriveImport(envelope:Envelope|undefined,ring:Keyring
    const start=latest.current;
    if(!start.envelope||!start.ring)return;
    running.current=true;setChecking(true);
-   setStatus("Checking Google Drive for trips from your other devices…");
+   // Keep the last status visible during background checks to avoid layout shifts.
    try{
     const latestRemote=await readLatestDriveDraft(start.vault,start.ring,true);
     const result=latestRemote;
     if(!valid()||!latest.current.enabled||latest.current.envelope?.ciphertext!==start.envelope.ciphertext)return;
     setRemoteVault(result.remoteVault);
     let currentEnvelope=start.envelope;
-    if(JSON.stringify(result.vault)!==JSON.stringify(start.vault)){
+    if(vaultDifferences(result.vault,start.vault).length){
      const applied=await latest.current.apply(result.vault,start.envelope);
      if(!applied)return;
      currentEnvelope=applied;
@@ -49,9 +50,8 @@ export function useAutomaticDriveImport(envelope:Envelope|undefined,ring:Keyring
   const retry=()=>void check();
   checkCurrent.current=retry;
   void check();
-  const timer=setInterval(()=>void check(),30000);
   window.addEventListener("focus",retry);window.addEventListener("online",retry);document.addEventListener("visibilitychange",retry);
-  return()=>{active=false;if(checkCurrent.current===retry)checkCurrent.current=null;clearInterval(timer);window.removeEventListener("focus",retry);window.removeEventListener("online",retry);document.removeEventListener("visibilitychange",retry);};
+  return()=>{active=false;if(checkCurrent.current===retry)checkCurrent.current=null;window.removeEventListener("focus",retry);window.removeEventListener("online",retry);document.removeEventListener("visibilitychange",retry);};
  },[connected,revision,ring,attempt]);
  useEffect(()=>{if(enabled)checkCurrent.current?.();},[enabled]);
  async function resolve(conflict:DriveConflict,choice:"local"|"remote"){
