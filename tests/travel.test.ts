@@ -5,6 +5,86 @@ import {derive,encrypt,decrypt} from "../lib/vault";
 import { searchAirports, airportLabel } from "../lib/airports";
 import { importConfirmation } from "../lib/confirmation-import";
 const expediaStay=`| |\n| :-: |\n[Queens Highway, Nadi Fiji](https://example.com/address)\n## Check-in\n| |\n| - |\n## Check-out\n**Wed, Dec 30**\n| |\n| - |\n**Thu, Dec 31**\n**Check-in time starts at 2:00pm**\n**10:00am**\nFree cancellation until Dec 23 at 3:00pm (property local time)\nDate changes not available.`;
+test('Passkey Hilton confirmation separates property, room, guest names and grand total',()=>{
+ const text=`#### DoubleTree by Hilton San Diego - Mission Valley
+
+7450 Hazard Center Drive
+
+San Diego , CA 92108 , United States of America
+
+#### 2 Queen Beds
+
+Edit [Cancel](https://book.passkey.com/entry?token=test#cancel-reservation) Add to calendar
+
+Acknowledgment number: NPYVUUFM
+
+**Check-in**
+
+Sat, Nov 14, 2026
+
+**Checkout**
+
+Sun, Nov 15, 2026
+
+Guests
+
+Alexander Ehrath, Maximillian A Ehrath
+
+**NightRate**
+
+Saturday, 11/14/26USD 205.00
+
+**SubtotalUSD 205.00**
+
+**Additional Taxes**
+
+Tax14.95% /  night
+
+USD 30.65
+
+**Grand TotalUSD 235.65**`;
+ const joined=text.replace(/[*#]/g,'').replace(/\n+/g,' ').replace(/\s*(Check-in|Checkout|Guests|NightRate)\s*/g,'$1');
+ for(const input of [text,joined,joined.replace('Check-in','Check‑in').replace('Sat, Nov','Saturday, Nov').replace('Sun, Nov','Sunday, Nov'),text.replace(/\n/g,'<br>'),text.replace(/[*#]/g,'').replace(/\s+/g,' ')]){
+  const [b]=importConfirmation(input,'trip','2026-09-14');
+  assert.equal(b.kind,'Hotel');assert.equal(b.title,'DoubleTree by Hilton San Diego - Mission Valley');
+  assert.equal(b.location,'7450 Hazard Center Drive San Diego, CA 92108, United States of America');
+  assert.equal(b.confirmation,'NPYVUUFM');assert.equal(b.travelers,2);
+  assert.equal(b.start,'2026-11-14T16:00');assert.equal(b.end,'2026-11-15T11:00');assert.equal(b.zone,'America/Los_Angeles');assert.equal(b.endZone,b.zone);
+  assert.equal(b.total,235.65);assert.equal(b.currency,'USD');assert.equal(b.payments.length,0);assert.equal(b.due,'');assert.equal(b.url,'');
+  assert.match(b.notes,/suggested defaults/);assert.ok(b.notes.includes('2 Queen Beds'));assert.doesNotThrow(()=>bookingSchema.parse(b));
+ }
+ assert.throws(()=>importConfirmation(text.replace('235.65','240.00'),'trip','2026-09-14'),/subtotal and taxes/);
+ assert.throws(()=>importConfirmation(text.replace('Sat, Nov 14','Fri, Nov 14'),'trip','2026-09-14'),/weekday/);
+});
+test('compact Expedia booking separates property, address, stay and room-price date',()=>{
+ const text='Booking details Tokatoka Resort Hotel Queens Highway, Nadi Fiji Check in: Dec 30, 2026 Check out: Dec 31, 2026 1 room x 1 night Studio Room Booked for: Alexander Ehrath Payment details Room price Wed, Dec 30 $162.57 Taxes & fees $14.62 Total $177.19';
+ const [b]=importConfirmation(text,'t','2026-09-13');
+ assert.equal(b.kind,'Hotel');assert.equal(b.title,'Tokatoka Resort Hotel');assert.equal(b.location,'Queens Highway, Nadi Fiji');assert.equal(b.zone,'Pacific/Fiji');
+ assert.equal(b.start,'2026-12-30T16:00');assert.equal(b.end,'2026-12-31T11:00');assert.equal(b.total,177.19);assert.equal(b.payments.length,0);
+ assert.match(b.notes,/suggested defaults/);assert.match(b.notes,/Currency assumed/);assert.ok(b.notes.endsWith(text));assert.doesNotThrow(()=>bookingSchema.parse(b));
+ assert.throws(()=>importConfirmation(text.replace('1 night','2 nights'),'t','2026-09-13'),/nights/);
+ assert.throws(()=>importConfirmation(text.replace('Dec 31, 2026','Feb 30, 2027'),'t','2026-09-13'),/calendar date/);
+});
+const paidExpediaStay=[
+ '## &#x20;Traveler Details','Adults, 3',expediaStay,
+ '## Accommodation details','Reserved for **Alexander Ehrath.**','You booked **1 room**.','**Studio Room**',
+ '## **Travel confidently with the Expedia app**','Manage your plans and make trip updates on the fly - wherever the journey takes you. [Explore the app](https://click.eg.expedia.com/?qs=example)',
+ "You'll earn **$3.25 in OneKeyCash** after this trip. You’re going places!",'[View rewards activity](https://click.eg.expedia.com/?qs=rewards)',
+ '**Price Details**','**Collected by Expedia**','1 night x 1 room','$162.57','Taxes','$14.62','**Subtotal**','**$177.19**','**Total**','**$177.19**','Paid on Aug 30, 2026','$177.19',
+].join('\n\n|     |\n| :-: |\n\n|   |\n| - |\n\n');
+test('Expedia paid Fiji stay reads total and dated payment without rewards or traveler prose',()=>{
+ for(const text of [paidExpediaStay,paidExpediaStay.replace(/\n/g,'<br>'),paidExpediaStay.replace(/\|[^\n]*|##|\*\*/g,'').replace(/\s+/g,' ')]){
+  const [b]=importConfirmation(text,'t','2026-09-13');
+  assert.equal(b.kind,'Hotel');assert.equal(b.location,'Queens Highway, Nadi Fiji');assert.equal(b.title,'Hotel stay · Queens Highway, Nadi Fiji');
+  assert.equal(b.start,'2026-12-30T14:00');assert.equal(b.end,'2026-12-31T10:00');assert.equal(b.zone,'Pacific/Fiji');assert.equal(b.endZone,'Pacific/Fiji');
+  assert.equal(b.total,177.19);assert.equal(b.currency,'USD');assert.equal(b.payments.length,1);assert.equal(b.payments[0].date,'2026-08-30');assert.equal(paid(b),177.19);assert.equal(balance(b),0);assert.equal(b.due,'');
+  assert.match(b.notes,/Currency assumed/);assert.doesNotThrow(()=>bookingSchema.parse(b));
+ }
+ const [partial]=importConfirmation(paidExpediaStay.replace(/Paid on Aug 30, 2026[\s\S]*$/,'Paid on Aug 30, 2026\n$100.00'),'t','2026-09-13');
+ assert.equal(balance(partial),77.19);
+ assert.throws(()=>importConfirmation(paidExpediaStay.replace('Aug 30, 2026','Feb 30, 2026'),'t','2026-09-13'),/payment date/);
+ assert.throws(()=>importConfirmation(paidExpediaStay.replace(/Paid on Aug 30, 2026[\s\S]*$/,'Paid on Aug 30, 2026\n$200.00'),'t','2026-09-13'));
+});
 test("hotel stay layout uses property timezone and excludes cancellation from stay dates",()=>{
  for(const text of [expediaStay,expediaStay.replace(/\|[^\n]*|##|\*\*/g,'').replace(/\s+/g,' ')]){
   const [b]=importConfirmation(text,'t','2026-09-11');
@@ -20,6 +100,13 @@ test("yearless hotel dates reject mismatched weekdays and handle December to Jan
  assert.throws(()=>importConfirmation(expediaStay.replace('Wed, Dec 30','Tue, Dec 30'),'t','2026-09-11'));
  const [b]=importConfirmation(expediaStay.replace('Thu, Dec 31','Fri, Jan 1').replace('Wed, Dec 30','Thu, Dec 31'),'t','2026-09-11');
  assert.equal(b.start,'2026-12-31T14:00');assert.equal(b.end,'2027-01-01T10:00');
+});
+test('missing hotel times offer 4 PM and 11 AM without rejecting the import',()=>{
+ const missing=expediaStay.replace('**Check-in time starts at 2:00pm**','').replace('**10:00am**','');
+ const [b]=importConfirmation(missing,'trip','2026-09-14');
+ assert.equal(b.start,'2026-12-30T16:00');assert.equal(b.end,'2026-12-31T11:00');assert.deepEqual(b.suggestedHotelTimes,['start','end']);assert.doesNotThrow(()=>bookingSchema.parse(b));
+ const [partial]=importConfirmation(expediaStay.replace('**10:00am**',''),'trip','2026-09-14');
+ assert.equal(partial.start,'2026-12-30T14:00');assert.equal(partial.end,'2026-12-31T11:00');assert.deepEqual(partial.suggestedHotelTimes,['end']);
 });
 const hotelConfirmation=`| Booking Confirmation - Octopus Resort - Fiji | Office in USA |
 | Reference: | 29623 |
@@ -38,10 +125,10 @@ test("hotel confirmation extracts property dates and accounting without inventin
  for(const text of [hotelConfirmation,hotelConfirmation.replace(/\|/g,'\t').replace(/<br>/g,'\n'),hotelConfirmation.replace(/\||<br>/g,' ').replace(/\s+/g,' ')]){
   const [b]=importConfirmation(text,'t');
   assert.equal(b.kind,'Hotel');assert.equal(b.title,'Octopus Resort - Fiji');assert.equal(b.confirmation,'29623');
-  assert.equal(b.start,'2026-12-25T15:00');assert.equal(b.end,'2026-12-30T11:00');
+  assert.equal(b.start,'2026-12-25T16:00');assert.equal(b.end,'2026-12-30T11:00');
   assert.equal(b.zone,'Pacific/Fiji');assert.equal(b.currency,'USD');assert.equal(b.total,4044);
   assert.equal(b.payments[0].amount,404.4);assert.equal(b.payments[0].date,'');assert.equal(balance(b),3639.6);
-  assert.match(b.notes,/placeholders/);assert.match(b.notes,/actually paid/);assert.throws(()=>bookingSchema.parse(b));
+  assert.match(b.notes,/suggested defaults/);assert.match(b.notes,/actually paid/);assert.throws(()=>bookingSchema.parse(b));
   assert.doesNotThrow(()=>bookingSchema.parse({...b,payments:[{...b.payments[0],date:'2026-09-01'}]}));
  }
  assert.throws(()=>importConfirmation(hotelConfirmation.replace('5 Nights','6 Nights'),'t'));
@@ -452,8 +539,9 @@ test("hotel booking reference layout parses split dates, 24-hour times and prope
  }
  const [b]=importConfirmation(moxyConfirmation.replace("16:00","4:00 PM").replace("11:00","11:00 AM"),"trip");assert.equal(b.start,"2025-09-26T16:00");
 });
-test("split hotel dates reject missing or contradictory values instead of guessing",()=>{
- for(const text of [moxyConfirmation.replace("Friday 26","Friday 31"),moxyConfirmation.replace("Friday 26","Thursday 26"),moxyConfirmation.replace("16:00","24:00"),moxyConfirmation.replace("16:00","16:75"),moxyConfirmation.replace("**16:00**",""),moxyConfirmation.replaceAll("September 2025","September"),moxyConfirmation.replace("Sunday 28","Friday 26")])assert.throws(()=>importConfirmation(text,"trip"));
+test("split hotel dates reject invalid dates and times but offer defaults for missing times",()=>{
+ for(const text of [moxyConfirmation.replace("Friday 26","Friday 31"),moxyConfirmation.replace("Friday 26","Thursday 26"),moxyConfirmation.replace("16:00","24:00"),moxyConfirmation.replace("16:00","16:75"),moxyConfirmation.replaceAll("September 2025","September"),moxyConfirmation.replace("Sunday 28","Friday 26")])assert.throws(()=>importConfirmation(text,"trip"));
+ const [missingTime]=importConfirmation(moxyConfirmation.replace("**16:00**",""),"trip");assert.equal(missingTime.start,"2025-09-26T16:00");assert.deepEqual(missingTime.suggestedHotelTimes,["start"]);
  const [unknown]=importConfirmation(moxyConfirmation.replaceAll("Moxy Downtown Los Angeles","Hotel Example"),"trip");assert.equal(unknown.zone,"");assert.equal(unknown.endZone,"");assert.match(unknown.notes,/Select the hotel's time zone/);
 });
 
@@ -652,7 +740,7 @@ test("Google-native files remain excluded from manual backup discovery",async()=
  assert.equal(isDownloadableDriveCopy({}),true);
 });
 
-import {mergeLiveDraft} from "../lib/drive-live-sync";
+import {mergeLiveDraft,reviewLiveDraft,chooseDriveConflict,acknowledgeDriveConflict} from "../lib/drive-live-sync";
 test("live merging refreshes unchanged records but preserves drafts and rejects overlapping edits",()=>{
  const base=emptyVault();base.trips=[{id:"a",name:"A",destination:"",notes:""},{id:"b",name:"B",destination:"",notes:""}];
  const remote=structuredClone(base);remote.trips[0].notes="PC work";
@@ -783,4 +871,123 @@ test("Expedia hotel name, itinerary and street address are independent import fi
  const vault=emptyVault();vault.trips=[{id:"trip",name:"LA",destination:"",notes:""}];vault.bookings=[booking];
  const key=await derive("hotel name and address stay separate");const reopened=(await decrypt(await encrypt(vault,key),"hotel name and address stay separate")).vault.bookings[0];
  assert.equal(reopened.title,"Aventura Hotel");assert.equal(reopened.location,booking.location);assert.equal(reopened.confirmation,booking.confirmation);
+});
+
+
+import {reviewReimport,replaceImportedReservation} from "../lib/reimport-reservation";
+import {pricePerTraveler,updateReservationPricing} from "../lib/reservation-pricing";
+test("reservation prices recalculate using the chosen total or per-traveler basis",()=>{
+ const original={...blankBooking('trip'),title:'Hotel',total:100,travelers:3};
+ assert.equal(pricePerTraveler(original),33.33);
+ assert.equal(updateReservationPricing(original,'travelers',4).total,100);
+ const perPerson=updateReservationPricing(original,'traveler',162.57);
+ assert.equal(perPerson.total,487.71);assert.equal(perPerson.priceBasis,'traveler');
+ const four=updateReservationPricing(perPerson,'travelers',4);
+ assert.equal(four.total,650.28);assert.equal(pricePerTraveler(four),162.57);
+ const total=updateReservationPricing(four,'total',800);
+ assert.equal(total.priceBasis,'total');assert.equal(pricePerTraveler(total),200);
+ assert.equal(updateReservationPricing(total,'travelers',5).total,800);
+ assert.equal(bookingSchema.parse(four).travelers,4);
+ assert.throws(()=>bookingSchema.parse({...original,travelers:0}));
+ assert.throws(()=>bookingSchema.parse({...original,travelers:1.5}));
+ const [imported]=importConfirmation(paidExpediaStay,'trip','2026-09-13');
+ assert.equal(imported.travelers,3);
+ assert.equal(importConfirmation(paidExpediaStay.replace('Adults, 3','Adults, 2\nChildren, 1\nInfants, 1'),'trip','2026-09-13')[0].travelers,4);
+ assert.equal(reviewReimport(original,{...blankBooking('trip'),title:'Hotel'}).travelers,3);
+ assert.equal(reviewReimport(original,{...imported,travelers:2}).travelers,2);
+ const flight=updateReservationPricing({...original,kind:'Flight'},'traveler',478.50);
+ assert.equal(flight.total,1435.50);assert.equal(pricePerTraveler(flight),478.50);
+ const savedFlight=bookingSchema.parse(flight);
+ assert.equal(reservationTotals([savedFlight])[0].total,1435.50);
+ assert.equal(balance(savedFlight),1435.50);
+ assert.equal(balance({...savedFlight,payments:[{id:'deposit',amount:500,date:'2026-09-13',note:''}]}),935.50);
+});
+test("Expedia dated full payment defaults import and re-import to fully paid without duplicating deposits",()=>{
+ const text=fedoraExpedia+'\nFree cancellation until Sep 4 at 12:00am (property local time)\nAccommodation details\nReserved for Alexander Ehrath.\nYou booked 1 room.\nStandard Room, 1 Queen Bed\nPrice Details\nCollected by Expedia\n1 night x 1 room\n$200.99\nTaxes\n$32.16\nSubtotal\n$233.15\nTotal\n$233.15\nPaid on Aug 31, 2026\n$233.15\n[Visa] ••••• [4821]';
+ const [incoming]=importConfirmation(text,'trip','2026-09-13');
+ assert.equal(incoming.total,233.15);assert.equal(balance(incoming),0);assert.equal(incoming.payments[0].date,'2026-08-31');
+ const existing={...incoming,id:'existing',payments:[{id:'deposit',amount:100,date:'2026-08-20',note:'Deposit'}]};
+ const reviewed=reviewReimport(existing,incoming);
+ assert.equal(balance(reviewed),0);assert.equal(reviewed.payments.length,2);assert.deepEqual(reviewed.payments[0],existing.payments[0]);assert.equal(reviewed.payments[1].amount,133.15);assert.equal(reviewed.payments[1].date,'2026-08-31');
+ const vault={...emptyVault(),bookings:[existing]};
+ const saved=replaceImportedReservation(vault,existing.id,reviewed,reviewed.payments.filter(p=>p.id!=='deposit')).bookings[0];
+ assert.equal(balance(saved),0);assert.equal(reviewReimport(saved,incoming).payments.length,2);
+ assert.equal(reviewReimport({...existing,payments:[]},incoming).payments[0].amount,233.15);
+ assert.equal(reviewReimport(existing,{...incoming,payments:[]}).payments.length,1);
+});
+test("re-import updates one reservation while keeping identity, payments, notes and linked documents",()=>{
+ const existing={...blankBooking("trip"),id:"original",kind:"Hotel" as const,title:"Old hotel",start:"2026-10-30T16:00",end:"2026-11-01T11:00",zone:"America/Los_Angeles",endZone:"America/Los_Angeles",total:522,currency:"USD",notes:"Keep my parking instructions",url:"https://example.com",due:"2026-10-23",dueDaysBefore:7,payments:[{id:"paid",amount:100,date:"2026-09-13",note:"Deposit"}]};
+ const incoming={...blankBooking("wrong-trip"),id:"import-id",kind:"Hotel" as const,title:"Moxy Downtown Los Angeles",start:"2026-11-02T16:00",end:"2026-11-04T11:00",zone:"America/Los_Angeles",endZone:"America/Los_Angeles",location:"New address",notes:"Updated confirmation",payments:[{id:"duplicate-paid",amount:100,date:"2026-09-13",note:"Payment in confirmation"}]};
+ const reviewed=reviewReimport(existing,incoming);
+ assert.equal(reviewed.tripId,"trip");assert.equal(reviewed.total,522);assert.equal(reviewed.url,existing.url);
+ assert.equal(reviewed.due,"2026-10-26");assert.deepEqual(reviewed.payments,existing.payments);
+ assert.match(reviewed.notes,/parking instructions/);assert.match(reviewed.notes,/Updated confirmation/);
+ const vault=emptyVault();vault.trips=[{id:"trip",name:"Trip",destination:"",notes:""},{id:"other",name:"Other",destination:"",notes:""}];vault.bookings=[existing,{...existing,id:"unrelated"}];
+ vault.artifacts=[{id:"attachment",tripId:"trip",bookingId:"original",name:"receipt.pdf",type:"application/pdf",data:"data:application/pdf;base64,YQ==",size:1,added:"2026-09-13"}];
+ const result=replaceImportedReservation(vault,existing.id,reviewed);
+ assert.equal(result.bookings.length,2);assert.equal(result.bookings[0].id,"original");assert.equal(result.bookings[0].title,incoming.title);
+ assert.deepEqual(result.bookings[0].payments,existing.payments);assert.deepEqual(result.artifacts,vault.artifacts);assert.deepEqual(result.bookings[1],vault.bookings[1]);
+ assert.equal(vault.bookings[0].title,"Old hotel","review and replacement do not mutate original state");
+ const moved=replaceImportedReservation(vault,existing.id,{...reviewed,tripId:"other"});
+ assert.equal(moved.artifacts[0].tripId,"other");assert.equal(moved.artifacts[0].bookingId,"original");
+ assert.throws(()=>replaceImportedReservation({...vault,bookings:[]},existing.id,reviewed),/no longer exists/);
+ assert.throws(()=>replaceImportedReservation(vault,existing.id,{...reviewed,total:50}),/paid|payments|total/i);
+ const remainder={id:"reimport-payment",amount:422,date:"2026-09-13",note:"Already paid"};
+ const fullyPaid=replaceImportedReservation(vault,existing.id,reviewed,[remainder]);
+ assert.deepEqual(fullyPaid.bookings[0].payments,[...existing.payments,remainder]);
+ assert.equal(balance(fullyPaid.bookings[0]),0);
+ const retried=replaceImportedReservation(fullyPaid,existing.id,reviewed,[remainder]);
+ assert.equal(retried.bookings[0].payments.length,2,"retry must not duplicate the payment");
+ assert.throws(()=>replaceImportedReservation(vault,existing.id,reviewed,[{...remainder,amount:522}]),/Payments exceed/);
+ assert.throws(()=>replaceImportedReservation(vault,existing.id,reviewed,[{...remainder,date:""}]));
+});
+
+
+import {editRecordedPayment,reservationTotals} from "../lib/payment-summary";
+test("editing a payment preserves its identity and recalculates balances without adding another payment",()=>{
+ const booking={...blankBooking("trip"),title:"Hotel",total:200,payments:[{id:"one",amount:50,date:"2026-09-10",note:"Deposit"},{id:"two",amount:25,date:"2026-09-11",note:"Second payment"}]};
+ const updated=editRecordedPayment(booking,{id:"one",amount:75,date:"2026-09-12",note:"Corrected deposit"});
+ assert.equal(updated.payments.length,2);assert.deepEqual(updated.payments[1],booking.payments[1]);assert.equal(paid(updated),100);assert.equal(balance(updated),100);
+ assert.equal(booking.payments[0].amount,50);
+ assert.throws(()=>editRecordedPayment(booking,{...booking.payments[0],amount:180}),/Payments exceed/);
+ assert.throws(()=>editRecordedPayment(booking,{...booking.payments[0],amount:0}));
+ assert.throws(()=>editRecordedPayment(booking,{...booking.payments[0],date:"2026-02-30"}));
+ assert.throws(()=>editRecordedPayment(booking,{...booking.payments[0],id:"missing"}),/no longer exists/);
+});
+test("overview totals sum costs and payments by currency with exact cent rounding",()=>{
+ const usd={...blankBooking("a"),title:"USD",total:100.10,currency:"USD",payments:[{id:"p",amount:25.05,date:"2026-09-12",note:""}]};
+ const extra={...blankBooking("b"),title:"More USD",total:0.20,currency:"USD"};
+ const fiji={...blankBooking("a"),title:"Fiji",total:300,currency:"FJD",payments:[{id:"f",amount:100,date:"2026-09-12",note:""}]};
+ assert.deepEqual(reservationTotals([usd,extra,fiji]),[{currency:"FJD",total:300,paid:100,remaining:200},{currency:"USD",total:100.30,paid:25.05,remaining:75.25}]);
+ assert.deepEqual(reservationTotals([usd]),[{currency:"USD",total:100.10,paid:25.05,remaining:75.05}]);
+ assert.deepEqual(reservationTotals([]),[]);
+});
+
+test("conflicts allow unrelated trips through and choices do not resolve other conflicts",async()=>{
+ const {readLocalSetting,writeLocalSetting,decryptWithKey}=await import("../lib/vault");
+ const ring=await derive("review conflicts without losing trips");
+ const base=emptyVault();base.trips=[{id:"a",name:"A",destination:"",notes:""},{id:"b",name:"B",destination:"",notes:""}];
+ const local=structuredClone(base),remote=structuredClone(base);
+ for(const item of local.trips)item.notes="phone";
+ for(const item of remote.trips)item.notes="computer";
+ remote.trips.push({id:"new",name:"San Diego Anime Con",destination:"San Diego",notes:""});
+ const review=reviewLiveDraft(local,remote,base);
+ assert.equal(review.conflicts.length,2);assert.equal(review.vault.trips.length,3);
+ assert.equal(review.vault.trips[0].notes,"phone");
+ assert.throws(()=>mergeLiveDraft(review.vault,remote,base),/another device/);
+ await writeLocalSetting("drive-live-base:"+ring.salt,await encrypt(base,ring));
+ await writeLocalSetting("drive-live-file:"+ring.salt,{id:"old-cache"});
+ const selected=chooseDriveConflict(review.vault,review.conflicts[0],"local");
+ await acknowledgeDriveConflict(review.conflicts[0],ring);
+ const nextBase=(await decryptWithKey((await readLocalSetting<import("../lib/vault").Envelope>("drive-live-base:"+ring.salt))!,ring)).vault;
+ assert.equal(await readLocalSetting("drive-live-file:"+ring.salt),null);
+ const remaining=reviewLiveDraft(selected,remote,nextBase);
+ assert.deepEqual(remaining.conflicts.map(c=>c.id),["b"]);
+ assert.equal(remaining.vault.trips[0].notes,"phone");
+ const accepted=chooseDriveConflict(remaining.vault,remaining.conflicts[0],"remote");
+ assert.equal(reviewLiveDraft(accepted,remote,nextBase).conflicts.length,0);
+ assert.equal(accepted.trips[1].notes,"computer");assert.equal(accepted.trips.length,3);
+ assert.equal(local.trips.length,2);assert.equal(remote.trips[0].notes,"computer");
+ const deleted=recordTripDeletions(remote,{...remote,trips:remote.trips.filter(t=>t.id!=="a")});
+ assert.ok(!reviewLiveDraft(local,deleted,base).vault.trips.some(t=>t.id==="a"));
 });

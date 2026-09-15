@@ -38,5 +38,5 @@ export function useDriveSave(envelope:Envelope|undefined,ring:Keyring|null,vault
   finally{running.current=false;setSaving(false);}
  }
  const status=!envelope?"":saving?"Saving to Google Drive…":error||(!ring?"Local vault is locked":checkpoint===undefined?"Checking last Google Drive save…":dirty?"Local changes · Not saved to Google Drive":"Saved to Google Drive");
- return {save,saving,dirty,status};
+ return {save,saving,dirty,checking:checkpoint===undefined,status};
 }

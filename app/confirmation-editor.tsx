@@ -27,8 +27,9 @@ function textForImport(node:Node):string {
  const text=Array.from(node.childNodes).map(textForImport).join("");
  return /^(P|DIV|LI|UL|OL|H[1-6]|SECTION|ARTICLE|BLOCKQUOTE)$/.test(node.tagName)?text+"\n":text;
 }
-export function ConfirmationEditor({onChange,disabled=false}:{onChange:(text:string)=>void;disabled?:boolean}){
+export function ConfirmationEditor({onChange,disabled=false,initialText=""}:{onChange:(text:string)=>void;disabled?:boolean;initialText?:string}){
  const editor=useRef<HTMLDivElement>(null);
+ const startingText=useRef(initialText).current;
  function insert(html:string,plain:string){
   const root=editor.current;if(!root||disabled)return;
   const fragment=html?safeFragment(html):document.createDocumentFragment();
@@ -43,7 +44,7 @@ export function ConfirmationEditor({onChange,disabled=false}:{onChange:(text:str
  return <div className="stack"><div ref={editor} className="confirmationEditor" contentEditable={!disabled} aria-disabled={disabled} suppressContentEditableWarning role="textbox" aria-label="Paste confirmation" aria-multiline="true" data-placeholder="Paste your confirmation here. Tables keep their rows and columns."
   onInput={()=>{if(editor.current)onChange(textForImport(editor.current).trim());}}
   onPaste={event=>{event.preventDefault();insert(event.clipboardData.getData("text/html"),event.clipboardData.getData("text/plain"));}}
-  onDrop={event=>{event.preventDefault();insert(event.dataTransfer.getData("text/html"),event.dataTransfer.getData("text/plain"));}}/>
+  onDrop={event=>{event.preventDefault();insert(event.dataTransfer.getData("text/html"),event.dataTransfer.getData("text/plain"));}}>{startingText}</div>
   <small>Paste directly from your email or webpage to retain tables. You can edit the text before preparing the import.</small>
  </div>;
 }

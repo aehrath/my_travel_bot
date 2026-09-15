@@ -41,6 +41,8 @@ export const bookingSchema = z.object({
  fromAirport:z.string().max(300).default(""),toAirport:z.string().max(300).default(""),
  location:z.string(),confirmation:z.string(),notes:z.string(),url:z.string().transform(normalizeProviderUrl).refine(v=>{if(!v)return true;try{const parsed=new URL(v);return ["https:","http:"].includes(parsed.protocol)&&!!parsed.hostname;}catch{return false;}},"Enter a valid website address"),
  total:z.number().nonnegative().finite(),currency:z.string().regex(/^[A-Z]{3}$/).refine(v=>{try{new Intl.NumberFormat("en",{style:"currency",currency:v});return true;}catch{return false;}}),
+ travelers:z.number().int().min(1).max(10000).optional(),priceBasis:z.enum(["total","traveler"]).optional(),perTravelerPrice:z.number().nonnegative().finite().optional(),
+ suggestedHotelTimes:z.array(z.enum(["start","end"])).optional(),
  dueDaysBefore:z.number().int().min(0).max(36500).nullable().optional(),
  due:z.union([date,z.literal("")]),payments:z.array(paymentSchema),
 }).transform(b=>({...b,due:balanceDueDate(b)})).superRefine((b,c)=>{if(b.dueDaysBefore!=null&&!date.safeParse(b.due).success)c.addIssue({code:"custom",message:"Enter a valid check-in date and whole number of days before it"});try{if(instant(b.end,b.endZone)<instant(b.start,b.zone))c.addIssue({code:"custom",message:"End must be after start"});}catch(e){c.addIssue({code:"custom",message:String(e)});}if(paid(b)>b.total+0.005)c.addIssue({code:"custom",message:"Payments exceed the reservation total"});});

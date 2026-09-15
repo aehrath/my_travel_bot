@@ -5,7 +5,7 @@ import { blankBooking, bookingSchema, flightReservationName, instant, today, uid
 const months=["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
 function clean(text:string):string {
  return text.replace(/\[([^\]]*)\]\([^)]*\)/g,"$1").replace(/<br\s*\/?\s*>/gi,"\n")
-  .replace(/&nbsp;|&#160;/gi," ").replace(/[\u00a0\u202f]/g," ").replace(/[*#|\\]/g," ")
+  .replace(/&nbsp;|&#160;|&#x20;|&#32;/gi," ").replace(/[\u00a0\u202f]/g," ").replace(/[*#|\\]/g," ")
   .split(/\r?\n/).map(line=>line.trim()).filter(line=>line&&!/^[-:\s]+$/.test(line)).join("\n");
 }
 function clock(text:string):string {
@@ -136,9 +136,9 @@ function hotelConfirmation(text:string,tripId:string):Booking[]|null {
  if(credit!==undefined&&remaining!==undefined&&Math.abs(total-credit-remaining)>.01)throw new Error("The hotel total, payments and remaining balance do not agree.");
  const currency=/\bAll amounts are[^\n]*\(([A-Z]{3})\)/i.exec(plain)?.[1]?.toUpperCase()||/\b([A-Z]{3})\s*[\d,]+\.\d{2}/.exec(field("Balance Required"))?.[1];
  if(!currency)throw new Error("Hotel currency is missing. Include its three-letter code.");
- const warnings=["Check-in/out times are not supplied; 15:00 and 11:00 are placeholders. Confirm them.",zone?`Time zone inferred as ${zone}; confirm it.`:"Select the property's time zone before importing.","No balance due date was supplied; add it if known."];
+ const warnings=["Check-in/out times are not supplied; 16:00 and 11:00 are suggested defaults; you can use them or edit them.",zone?`Time zone inferred as ${zone}; confirm it.`:"Select the property's time zone before importing.","No balance due date was supplied; add it if known."];
  if(credit)warnings.push(`Payments/Invoiced reports ${currency} ${credit.toFixed(2)}. Confirm this was actually paid and enter the payment date below, or remove the proposed payment.`);
- const b:Booking={...blankBooking(tripId),kind:"Hotel",title,location,confirmation:field("Reference").split(/\s/)[0],start:arrival+"T15:00",end:departure+"T11:00",zone,endZone:zone,total,currency,
+ const b:Booking={...blankBooking(tripId),kind:"Hotel",title,location,confirmation:field("Reference").split(/\s/)[0],suggestedHotelTimes:["start","end"],start:arrival+"T16:00",end:departure+"T11:00",zone,endZone:zone,total,currency,
   payments:credit?[{id:uid(),amount:credit,date:"",note:"Imported Payments/Invoiced — confirm payment received"}]:[],notes:"Import review: "+warnings.join(" ")+"\n\n"+text};
  // Missing payment dates/time zones remain explicit review requirements. Saving validates them.
  return [b];
@@ -152,14 +152,16 @@ function hotelBookingConfirmation(text:string,tripId:string):Booking[]|null {
  const stay=flat.split(/\bReservation information\b/i)[0];
  const labels=[...stay.matchAll(/\bCheck[ -]?(in|out)\b/gi)];
  if(labels.length!==2||labels[0][1].toLowerCase()!=="in"||labels[1][1].toLowerCase()!=="out")throw new Error("Include one hotel check-in and one check-out section in that order.");
+ const suggestedHotelTimes:NonNullable<Booking["suggestedHotelTimes"]>=[];
  function endpoint(index:number){
   const section=stay.slice(labels[index].index!+labels[index][0].length,index===0?labels[1].index:undefined);
-  const match=/^\s*:?\s*(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s*(\d{1,2})\s*(January|February|March|April|May|June|July|August|September|October|November|December)\s*(\d{4})\s*(\d{1,2}):(\d{2})(?:\s*(AM|PM))?\b/i.exec(section);
+  const match=/^\s*:?\s*(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s*(\d{1,2})\s*(January|February|March|April|May|June|July|August|September|October|November|December)\s*(\d{4})(?:\s*(\d{1,2}):(\d{2})(?:\s*(AM|PM))?)?\b/i.exec(section);
   const label=index===0?"check-in":"check-out";
-  if(!match)throw new Error(`Could not read hotel ${label}. Include weekday, day, month, year and local time.`);
+  if(!match)throw new Error(`Could not read hotel ${label}. Include weekday, day, month and year.`);
   const date=`${match[4]}-${String(months.indexOf(match[3].slice(0,3).toLowerCase())+1).padStart(2,"0")}-${match[2].padStart(2,"0")}`;
   const parsed=new Date(date+"T00:00:00Z");
   if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==date||["sun","mon","tue","wed","thu","fri","sat"][parsed.getUTCDay()]!==match[1].slice(0,3).toLowerCase())throw new Error(`Hotel ${label} date and weekday disagree. Review the supplied date.`);
+  if(!match[5]){suggestedHotelTimes.push(index===0?"start":"end");return date+(index===0?"T16:00":"T11:00");}
   let hour=Number(match[5]);
   if(Number(match[6])>59||hour>(match[7]?12:23)||(match[7]&&hour<1))throw new Error(`Invalid hotel ${label} time.`);
   if(match[7])hour=hour%12+(match[7].toUpperCase()==="PM"?12:0);
@@ -186,7 +188,7 @@ function hotelBookingConfirmation(text:string,tripId:string):Booking[]|null {
  const subtotal=/\bSub[- ]?total\s*:?\s*(?:[A-Z]{3}\s*)?[$€£]?\s*(\d[\d,]*\.\d{2})\b/i.exec(flat);
  const taxes=/\bTaxes\s*:?\s*(?:[A-Z]{3}\s*)?[$€£]?\s*(\d[\d,]*\.\d{2})\b/i.exec(flat);
  const fee=/\bPlus hotel fees\s*:?\s*(?:([A-Z]{3})\s*)?\$?\s*(\d[\d,]*\.\d{2})\b/i.exec(flat);
- const warnings=[zone?`Time zone inferred from the hotel location: ${zone}; confirm it.`:"Select the hotel's time zone before importing."];
+ const warnings=[...(suggestedHotelTimes.length?["Missing hotel times have suggested defaults: 4 PM check-in and 11 AM checkout. Supplied times are kept."]:[]),zone?`Time zone inferred from the hotel location: ${zone}; confirm it.`:"Select the hotel's time zone before importing."];
  let total=0,currency="USD";
  if(quoted){
   if(!quoted[1])throw new Error("Include the three-letter currency code beside the hotel total.");
@@ -200,9 +202,66 @@ function hotelBookingConfirmation(text:string,tripId:string):Booking[]|null {
   }
   warnings.push("No payment or deadline for the full balance was supplied; no payment has been recorded.");
  }else warnings.push("No cost, payment or balance deadline was supplied; add them if known.");
- const booking:Booking={...blankBooking(tripId),kind:"Hotel",title,location,confirmation,start,end,zone,endZone:zone,total:total/100,currency,notes:"Import review: "+warnings.join(" ")+"\n\n"+text};
+ const booking:Booking={...blankBooking(tripId),kind:"Hotel",suggestedHotelTimes,title,location,confirmation,start,end,zone,endZone:zone,total:total/100,currency,notes:"Import review: "+warnings.join(" ")+"\n\n"+text};
  bookingSchema.parse({...booking,zone:zone||"UTC",endZone:zone||"UTC"});
  return [booking];
+}
+function passkeyHotelConfirmation(text:string,tripId:string,referenceDate:string):Booking[]|null {
+ // Inline labels in copied HTML can touch the dates on either side. Restore
+ // those boundaries before matching dates (including nonbreaking hyphens).
+ const plain=clean(text).replace(/Check[\s\-\u2010-\u2015\u2212]*(in|out)/gi," Check-$1 ")
+  .replace(/Acknowledg(?:e)?ment\s*number/gi," Acknowledgment number ")
+  .replace(/Guests|Night\s*Rate|Subtotal|Additional\s*Taxes|Grand\s*Total/gi,label=>" "+label+" ");
+ const flat=plain.replace(/\s+/g," ");
+ if(!/\bAcknowledgment number\s*:/i.test(flat)||!/\bGrand\s*Total/i.test(flat))return null;
+ const property=/^(.+?)\s+(\d+\s+.+?\bUnited States(?: of America)?\b)/i.exec(flat);
+ if(!property)throw new Error("Include the hotel name and complete street address before the acknowledgment number.");
+ const title=property[1].trim(),location=property[2].replace(/\s+,/g,",").trim();
+ const confirmation=/\bAcknowledgment number\s*:\s*([A-Z0-9-]+)/i.exec(flat)![1];
+ const endpoint=(label:string)=>{
+  const match=new RegExp("\\bCheck[ -]?"+label+"\\s*:?\\s*((?:Sun(?:day)?|Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?),?\\s+[A-Za-z]+\\s+\\d{1,2},?\\s+\\d{4})(?!\\d)","i").exec(flat);
+  if(!match)throw new Error("Include both hotel check-in and checkout dates with their years.");
+  return match[1].replace(/^(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)/i,day=>day.slice(0,3));
+ };
+ const quoted=/\bGrand\s*Total\s*([A-Z]{3})\s*[$€£]?\s*(\d[\d,]*\.\d{2})\b/i.exec(flat);
+ if(!quoted)throw new Error("Include the hotel's grand total and three-letter currency code.");
+ const currency=quoted[1].toUpperCase(),cents=(s:string)=>Math.round(Number(s.replace(/,/g,""))*100);
+ const subtotal=/\bSubtotal\s*([A-Z]{3})\s*[$€£]?\s*(\d[\d,]*\.\d{2})\b/i.exec(flat);
+ const taxSection=/\bAdditional Taxes\s+([\s\S]*?)(?=Grand\s*Total)/i.exec(flat)?.[1]||"";
+ const taxes=[...taxSection.matchAll(/\b([A-Z]{3})\s*[$€£]?\s*(\d[\d,]*\.\d{2})\b(?!\s*%)/gi)];
+ if([...(subtotal?[subtotal]:[]),...taxes].some(amount=>amount[1].toUpperCase()!==currency))throw new Error("Hotel subtotal, taxes and total use different currencies.");
+ if(subtotal&&taxes.length&&cents(subtotal[2])+taxes.reduce((sum,tax)=>sum+cents(tax[2]),0)!==cents(quoted[2]))throw new Error("Hotel subtotal and taxes do not match the grand total.");
+ const guests=/\bGuests\s+([\s\S]*?)(?=\bNight\s*Rate\b|\bSubtotal)/i.exec(plain)?.[1].trim();
+ const travelers=guests?.split(/,|\n/).map(guest=>guest.trim()).filter(Boolean).length;
+ const normalized=`${location}\nCheck-in\nCheck-out\n${endpoint("in")}\n${endpoint("out")}\n4:00pm\n11:00am\nCancellation policy\nPrice Details\nTotal ${currency} $${quoted[2]}`;
+ const booking=hotelStayConfirmation(normalized,tripId,referenceDate)![0];
+ const warning=booking.notes.split("\n\n")[0].replace("Property name is absent. A provisional name uses the address; rename it when known. ","").replace("The cancellation deadline is retained in notes, not used as a payment due date.","");
+ return [{...booking,suggestedHotelTimes:["start","end"],title,location,confirmation,...(travelers?{travelers}:{}),notes:warning+" Check-in/out times were not supplied; 16:00 and 11:00 are suggested defaults; you can use them or edit them. No payment was stated; the grand total is not proof of payment."+(travelers?` Traveler count inferred from ${travelers} guest names; confirm it.`:"")+"\n\n"+text}];
+}
+function compactHotelConfirmation(text:string,tripId:string,referenceDate:string):Booking[]|null {
+ const flat=clean(text).replace(/\s+/g," ");
+ if(!/\bBooking details\b/i.test(flat)||!/\bCheck[ -]in\s*:/i.test(flat)||!/\bCheck[ -]out\s*:/i.test(flat))return null;
+ const heading=/\bBooking details\s+(.+?)\s+Check[ -]in\s*:/i.exec(flat)?.[1]||"";
+ const property=/^(.+?\b(?:Resort Hotel|Hotel|Resort|Inn|Lodge|Apartments))\s+(.+)$/i.exec(heading);
+ const title=property?.[1]||heading;
+ const location=property?.[2]||"";
+ function endpoint(label:string){
+  const match=new RegExp("\\bCheck[ -]"+label+"\\s*:\\s*([A-Za-z]+)\\s+(\\d{1,2}),?\\s+(\\d{4})\\b","i").exec(flat);
+  if(!match)throw new Error("Include the month, day and year for both hotel stay dates.");
+  const month=months.indexOf(match[1].slice(0,3).toLowerCase())+1;
+  const date=`${match[3]}-${String(month).padStart(2,"0")}-${match[2].padStart(2,"0")}`;
+  const parsed=new Date(date+"T00:00:00Z");
+  if(!month||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==date)throw new Error("Invalid hotel calendar date.");
+  return {date,label:`${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][parsed.getUTCDay()]}, ${months[month-1]} ${match[2]}, ${match[3]}`};
+ }
+ const start=endpoint("in"),end=endpoint("out");
+ const nights=/\b\d+\s+rooms?\s*x\s*(\d+)\s+nights?\b/i.exec(flat);
+ if(nights&&Number(nights[1])!==(Date.parse(end.date)-Date.parse(start.date))/86400000)throw new Error("Hotel stay dates disagree with the number of nights.");
+ const prices=flat.split(/\bPayment details\b/i)[1]||"";
+ // Reuse the price/address parser, keeping room-price dates out of the stay section.
+ const normalized=`${location}\nCheck-in\nCheck-out\n${start.label}\n${end.label}\nCheck-in time starts at 4:00pm\n11:00am\nCancellation policy\nPrice Details\n${prices}`;
+ const bookings=hotelStayConfirmation(normalized,tripId,referenceDate)!;
+ return bookings.map(booking=>({...booking,suggestedHotelTimes:["start","end"],title,location,notes:booking.notes.split("\n\n")[0].replace("Property name is absent. A provisional name uses the address; rename it when known. ", "").replace("The cancellation deadline is retained in notes, not used as a payment due date.", "")+" Check-in/out times were not supplied; 16:00 and 11:00 are suggested defaults; you can use them or edit them. Payment details describe the price, not proof of payment; no payment is recorded unless explicitly dated.\n\n"+text}));
 }
 function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):Booking[]|null {
  const plain=clean(text);
@@ -225,12 +284,25 @@ function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):B
  if(!dates[0][4]||!dates[1][4])warnings.push(`Stay dates inferred as ${startDate} to ${endDate}; confirm the omitted year.`);
  const clockPattern=/\b\d{1,2}:\d{2}\s*(?:AM|PM)\b/gi;
  const times=[...stay.matchAll(clockPattern)];
- if(times.length!==2)throw new Error("Could not identify both check-in and checkout times. Include each local time with AM/PM.");
+ if(times.length>2)throw new Error("The hotel stay has conflicting times. Review the check-in and checkout times.");
+ const suggestedHotelTimes:NonNullable<Booking["suggestedHotelTimes"]>=[];
+ let startTime="16:00",endTime="11:00";
+ if(times.length===2){startTime=clock(times[0][0]);endTime=clock(times[1][0]);}
+ else if(times.length===1){
+  const checkin=/Check-in time[^\n]*?(\d{1,2}:\d{2}\s*(?:AM|PM))/i.exec(stay);
+  const checkout=/Check-out time[^\n]*?(\d{1,2}:\d{2}\s*(?:AM|PM))/i.exec(stay);
+  if(checkin){startTime=clock(checkin[1]);suggestedHotelTimes.push("end");}
+  else if(checkout){endTime=clock(checkout[1]);suggestedHotelTimes.push("start");}
+  else throw new Error("The single hotel time is not labeled. Label it as Check-in time or Check-out time.");
+ }else suggestedHotelTimes.push("start","end");
+ if(suggestedHotelTimes.length)warnings.push("Missing hotel times have suggested defaults: 4 PM check-in and 11 AM checkout. Supplied times are kept.");
  const beforeStay=stay.slice(0,stay.search(/\bCheck-in\b/i)).trim();
  // Expedia puts traveler counts before the address, separated by empty table cells.
  // Require a street suffix so an itinerary number or guest count cannot become the address.
- const street=/\b\d+[A-Za-z]?\s+(?:[A-Za-z][A-Za-z.'’-]*\s+){1,6}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Highway|Hwy|Court|Ct|Place|Pl)\b[\s\S]*$/i.exec(beforeStay)?.[0];
- const location=(street||beforeStay).replace(/\s+/g," ").trim();
+ const addressSection=beforeStay.split(/\bAdults\s*,?\s*\d+/i).at(-1)!.trim();
+ const street=/\b\d+[A-Za-z]?\s+(?:[A-Za-z][A-Za-z.'’-]*\s+){1,6}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Highway|Hwy|Court|Ct|Place|Pl)\b[\s\S]*$/i.exec(addressSection)?.[0];
+ const namedStreet=/\b(?:[A-Za-z][A-Za-z.'’-]*\s+){1,4}(?:Highway|Road|Street|Avenue|Boulevard|Lane)\b[^\n]*$/i.exec(addressSection)?.[0];
+ const location=(street||namedStreet||beforeStay).replace(/\s+/g," ").trim();
  const itinerary=/\bExpedia itinerary\s*:\s*([A-Z0-9-]+)/i.exec(beforeStay);
  const propertyName=itinerary?beforeStay.slice(0,itinerary.index).trim().split("\n").at(-1)?.trim()||"":"";
  const title=propertyName||("Hotel stay"+(location?" · "+location:" · "+startDate)).slice(0,300);
@@ -241,8 +313,31 @@ function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):B
  const zone=cityZones.length===1?cityZones[0]:zones.length===1?zones[0]:"";
  warnings.push(zone?`Time zone inferred from the property address: ${zone}; confirm it.`:"Property time zone could not be determined; enter it before importing.");
  if(!propertyName)warnings.push("Property name is absent. A provisional name uses the address; rename it when known.");
- warnings.push("Cost is absent; add it when known. The cancellation deadline is retained in notes, not used as a payment due date.");
- return [{...blankBooking(tripId),kind:"Hotel",title,location,confirmation:itinerary?.[1]||"",start:startDate+"T"+clock(times[0][0]),end:endDate+"T"+clock(times[1][0]),zone,endZone:zone,notes:"Import review: "+warnings.join(" ")+"\n\n"+text}];
+ // Price labels, rather than the first dollar amount, exclude rewards and avoid
+ // counting subtotal/taxes again. Paid-on records carry their own calendar date.
+ const price=plain.split(/\bPrice Details\b/i)[1]||"";
+ const money="(?:([A-Z]{3})\\s*)?([$€£])\\s*(\\d[\\d,]*\\.\\d{2})\\b";
+ const quoted=new RegExp("\\bTotal\\s*:?\\s*"+money,"i").exec(price);
+ const currency=quoted?.[1]?.toUpperCase()||(quoted?.[2]==="€"?"EUR":quoted?.[2]==="£"?"GBP":"USD");
+ const total=quoted?Number(quoted[3].replace(/,/g,"")):0;
+ const payments:Booking["payments"]=[];
+ if(quoted){
+  if(!quoted[1]&&quoted[2]==="$")warnings.push("Currency assumed to be USD because the confirmation only says $; confirm it.");
+  const records=[...price.matchAll(new RegExp("\\bPaid on\\s+([A-Za-z]+)\\s+(\\d{1,2}),?\\s+(\\d{4})\\s+"+money,"gi"))];
+  for(const record of records){
+   const month=months.indexOf(record[1].slice(0,3).toLowerCase())+1;
+   const date=`${record[3]}-${String(month).padStart(2,"0")}-${record[2].padStart(2,"0")}`;
+   const parsed=new Date(date+"T00:00:00Z");
+   if(!month||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==date)throw new Error("Invalid Expedia payment date. Review the paid-on date.");
+   if((record[4]&&record[4].toUpperCase()!==currency)||record[5]!==quoted[2])throw new Error("Expedia payment and total use different currencies. Review the amounts.");
+   payments.push({id:uid(),amount:Number(record[6].replace(/,/g,"")),date,note:"Paid to Expedia"});
+  }
+  if(/\bPaid on\b/i.test(price)&&!payments.length)warnings.push("The payment date or amount could not be read; add the payment manually.");
+ }else warnings.push("Cost is absent; add it when known.");
+ warnings.push("The cancellation deadline is retained in notes, not used as a payment due date.");
+ const booking:Booking={...blankBooking(tripId),kind:"Hotel",title,location,confirmation:itinerary?.[1]||"",suggestedHotelTimes,start:startDate+"T"+startTime,end:endDate+"T"+endTime,zone,endZone:zone,total,currency,payments,notes:"Import review: "+warnings.join(" ")+"\n\n"+text};
+ bookingSchema.parse({...booking,zone:zone||"UTC",endZone:zone||"UTC"});
+ return [booking];
 }
 function shuttleConfirmation(text:string,tripId:string):Booking[]|null {
  const plain=clean(text);
@@ -306,10 +401,12 @@ function southSeaCruiseConfirmation(text:string,tripId:string):Booking[]|null {
   return b;
  });
 }
-export function importConfirmation(text:string,tripId:string,referenceDate=today()):Booking[]{
+function parseConfirmation(text:string,tripId:string,referenceDate:string):Booking[]{
+ const passkey=passkeyHotelConfirmation(text,tripId,referenceDate);if(passkey)return passkey;
  const cruise=southSeaCruiseConfirmation(text,tripId);if(cruise)return cruise;
  const shuttle=shuttleConfirmation(text,tripId);if(shuttle)return shuttle;
  const hotelBooking=hotelBookingConfirmation(text,tripId);if(hotelBooking)return hotelBooking;
+ const compactHotel=compactHotelConfirmation(text,tripId,referenceDate);if(compactHotel)return compactHotel;
  const stay=hotelStayConfirmation(text,tripId,referenceDate);if(stay)return stay;
  const hotel=hotelConfirmation(text,tripId);if(hotel)return hotel;
  const delta=deltaConfirmation(text,tripId,referenceDate);if(delta)return delta;
@@ -336,4 +433,15 @@ export function importConfirmation(text:string,tripId:string,referenceDate=today
   start:local[0],end:local[1],zone:from.zone,endZone:to.zone,airline:carrier?airlineLabel(carrier):flight?.[1]||"",
   flightNumber:flight?flight[1]+flight[2]:"",confirmation:/Booking Reference\s*:\s*([A-Z0-9-]+)/i.exec(plain)?.[1]||"",notes:text};
  return [bookingSchema.parse({...booking,title:flightReservationName(booking)})];
+}
+
+export function importConfirmation(text:string,tripId:string,referenceDate=today()):Booking[]{
+ const plain=clean(text);
+ const count=(label:string)=>{
+  const match=new RegExp("\\b"+label+"\\s*[:,]?\\s*(\\d+)\\b","i").exec(plain)||new RegExp("\\b(\\d+)\\s+"+label+"\\b","i").exec(plain);
+  return match?Number(match[1]):undefined;
+ };
+ const adults=count("Adults?"),children=count("Children"),infants=count("Infants?");
+ const travelers=adults===undefined?undefined:adults+(children||0)+(infants||0);
+ return parseConfirmation(text,tripId,referenceDate).map(booking=>travelers&&travelers<=10000?{...booking,travelers}:booking);
 }
