@@ -1,3 +1,4 @@
+import {sameValue} from "./vault-diff";
 import {vaultSchema,type Vault} from "./travel";
 // Only explicit deletion records remove trips. Absence from an older copy never does.
 export function applyTripDeletions(vault:Vault,ids:string[]=[]):Vault{
@@ -26,7 +27,7 @@ export function mergeVaultImport(local:Vault,incoming:Vault):Vault{
 export function mergeSharedUpdates(local:Vault,incoming:Vault,base:Vault):Vault{
  function merge<T extends {id:string}>(current:T[],other:T[],previous:T[]){
   const old=new Map(previous.map(item=>[item.id,item])),remote=new Map(other.map(item=>[item.id,item]));
-  const chosen=current.map(item=>JSON.stringify(item)===JSON.stringify(old.get(item.id))?(remote.get(item.id)??item):item);
+  const chosen=current.map(item=>sameValue(item,old.get(item.id))?(remote.get(item.id)??item):item);
   const ids=new Set(current.map(item=>item.id));return [...chosen,...other.filter(item=>!ids.has(item.id))];
  }
  const trips=merge(local.trips,incoming.trips,base.trips),bookings=merge(local.bookings,incoming.bookings,base.bookings);

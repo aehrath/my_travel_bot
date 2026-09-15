@@ -1,7 +1,8 @@
 "use client";
 import type {DriveConflict} from "@/lib/drive-live-sync";
-const labels:Record<string,string>={title:"Reservation",name:"Name",tripId:"Trip",start:"Start",end:"End",zone:"Time zone",endZone:"End time zone",total:"Total price",currency:"Currency",travelers:"Travelers",payments:"Payments",due:"Balance due date",dueDaysBefore:"Days before check-in",location:"Location",address:"Address",notes:"Notes",confirmation:"Confirmation",priceBasis:"Price entered as",perTravelerPrice:"Price per traveler"};
-function display(value:unknown):string{
+export const labels:Record<string,string>={title:"Reservation",name:"Name",tripId:"Trip",start:"Start",end:"End",zone:"Time zone",endZone:"End time zone",total:"Total price",currency:"Currency",travelers:"Travelers",payments:"Payments",due:"Balance due date",dueDaysBefore:"Days before check-in",location:"Location",address:"Address",notes:"Notes",confirmation:"Confirmation",priceBasis:"Price entered as",perTravelerPrice:"Price per traveler"};
+export function display(value:unknown):string{
+ if(typeof value==="string"&&value.startsWith("data:"))return "File contents (not shown)";
  if(value===undefined||value===null||value==="")return "Not set";
  if(Array.isArray(value))return value.length?value.map(display).join("\n\n"):"None";
  if(typeof value==="object")return Object.entries(value).filter(([key])=>key!=="id").map(([key,val])=>`${labels[key]??key}: ${display(val)}`).join("\n");

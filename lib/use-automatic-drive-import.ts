@@ -6,19 +6,20 @@ import {readLatestDriveDraft,rememberDriveBase,chooseDriveConflict,acknowledgeDr
 import {type Envelope,type Keyring} from "./vault";
 import type {Vault} from "./travel";
 // Import is additive and is committed by the app with its usual atomic revision guard.
-export function useAutomaticDriveImport(envelope:Envelope|undefined,ring:Keyring|null,vault:Vault,enabled:boolean,apply:(vault:Vault,expected:Envelope)=>Promise<boolean>){
+export function useAutomaticDriveImport(envelope:Envelope|undefined,ring:Keyring|null,vault:Vault,enabled:boolean,apply:(vault:Vault,expected:Envelope)=>Promise<Envelope|false>,reconciled:(envelope:Envelope)=>Promise<void>){
  const {connected,revision}=useDriveConnection();
+ const [remoteVault,setRemoteVault]=useState<Vault|null>(null);
  const [conflicts,setConflicts]=useState<DriveConflict[]>([]);
  const [status,setStatus]=useState("");
  const [error,setError]=useState("");
  const [checking,setChecking]=useState(false);
  const [attempt,setAttempt]=useState(0);
- const latest=useRef({envelope,ring,vault,enabled,apply});latest.current={envelope,ring,vault,enabled,apply};
+ const latest=useRef({envelope,ring,vault,enabled,apply,reconciled});latest.current={envelope,ring,vault,enabled,apply,reconciled};
  const running=useRef(false),retryPending=useRef(false);
  const checkCurrent=useRef<(()=>void)|null>(null);
  useEffect(()=>{
   let active=true;
-  if(!ring){setStatus("");setError("");setConflicts([]);return;}
+  if(!ring){setStatus("");setError("");setConflicts([]);setRemoteVault(null);return;}
   if(!connected)return;
   const valid=()=>active&&isDriveConnected()&&driveSessionVersion()===revision;
   async function check(){
@@ -32,9 +33,14 @@ export function useAutomaticDriveImport(envelope:Envelope|undefined,ring:Keyring
     const latestRemote=await readLatestDriveDraft(start.vault,start.ring,true);
     const result=latestRemote;
     if(!valid()||!latest.current.enabled||latest.current.envelope?.ciphertext!==start.envelope.ciphertext)return;
+    setRemoteVault(result.remoteVault);
+    let currentEnvelope=start.envelope;
     if(JSON.stringify(result.vault)!==JSON.stringify(start.vault)){
-     if(!await latest.current.apply(result.vault,start.envelope))return;
+     const applied=await latest.current.apply(result.vault,start.envelope);
+     if(!applied)return;
+     currentEnvelope=applied;
     }
+    if(valid()&&!result.conflicts.length&&result.matchesDrive)await latest.current.reconciled(currentEnvelope);
     if(valid()){setConflicts(result.conflicts);if(!result.conflicts.length&&latestRemote.envelope)await rememberDriveBase(latestRemote.envelope,latestRemote.file,latestRemote.document);}
     if(valid()){setError("");setStatus(latestRemote.index?`Drive checked · Linked-file storage (${latestRemote.index.parts.length} files) · ${result.vault.trips.length} ${result.vault.trips.length===1?"trip":"trips"} on this device`:"No live Drive file · Save to Google Drive to create one");}
    }catch(error){if(valid()){setStatus("");setError("Could not load trips from Google Drive: "+(error instanceof Error?error.message:String(error)));}}
@@ -62,5 +68,5 @@ export function useAutomaticDriveImport(envelope:Envelope|undefined,ring:Keyring
    setConflicts(items=>items.filter(item=>item.kind!==current.kind||item.id!==current.id));
   }finally{running.current=false;setChecking(false);setAttempt(value=>value+1);}
  }
- return {status,error,conflicts,resolve,checking,retry:()=>setAttempt(value=>value+1)};
+ return {status,error,remoteVault,conflicts,resolve,checking,retry:()=>setAttempt(value=>value+1)};
 }

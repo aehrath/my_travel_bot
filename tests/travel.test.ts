@@ -991,3 +991,38 @@ test("conflicts allow unrelated trips through and choices do not resolve other c
  const deleted=recordTripDeletions(remote,{...remote,trips:remote.trips.filter(t=>t.id!=="a")});
  assert.ok(!reviewLiveDraft(local,deleted,base).vault.trips.some(t=>t.id==="a"));
 });
+
+test("reconciled Drive content disables saving only for the exact local revision",async()=>{
+ const {reconcileDriveDraft,hasLocalDriveChanges}=await import("../lib/drive-save-state");
+ const ring=await derive("mark matching Drive contents saved");
+ const synced=await encrypt(emptyVault(),ring),newer=await encrypt({...emptyVault(),trips:[{id:"new",name:"Unsaved trip",destination:"",notes:""}]},ring);
+ let checkpoint:import("../lib/drive-save-state").DriveSaveCheckpoint|null=null;
+ const saved=await reconcileDriveDraft(synced,{read:async()=>synced,checkpoint:async value=>{checkpoint=value;}});
+ assert.ok(saved);assert.equal(hasLocalDriveChanges(synced,checkpoint),false);
+ assert.equal(hasLocalDriveChanges(newer,checkpoint),true);
+ let wrote=false;
+ assert.equal(await reconcileDriveDraft(synced,{read:async()=>newer,checkpoint:async()=>{wrote=true;}}),null);
+ assert.equal(wrote,false);
+});
+
+test("Drive differences ignore record/property order but show every content change",async()=>{
+ const {vaultDifferences}=await import("../lib/vault-diff");
+ const local=emptyVault();local.trips=[{id:"a",name:"A",destination:"LA",notes:""},{id:"b",name:"B",destination:"Fiji",notes:""}];
+ const remote=structuredClone(local);
+ remote.trips=remote.trips.reverse().map(t=>({notes:t.notes,destination:t.destination,name:t.name,id:t.id}));
+ assert.deepEqual(vaultDifferences(local,remote),[]);
+ remote.deletedTripIds=[];assert.deepEqual(vaultDifferences(local,remote),[]);
+ remote.trips[1].notes="Changed on Drive";
+ let differences=vaultDifferences(local,remote);
+ assert.equal(differences.length,1);assert.equal(differences[0].name,"A");
+ assert.deepEqual(differences[0].fields,[{key:"notes",local:"",remote:"Changed on Drive"}]);
+ local.trips.push({id:"new",name:"New local trip",destination:"",notes:""});
+ remote.trips.push({id:"remote",name:"Remote trip",destination:"",notes:""});
+ remote.deletedTripIds=["removed"];
+ differences=vaultDifferences(local,remote);
+ assert.equal(differences.find(d=>d.id==="new")?.status,"Only on this device");
+ assert.equal(differences.find(d=>d.id==="remote")?.status,"Only on Google Drive");
+ assert.ok(differences.some(d=>d.kind==="deletions"));
+ const b=booking();local.bookings=[b];remote.bookings=[{...b,total:b.total+1}];
+ assert.ok(vaultDifferences(local,remote).some(d=>d.fields.some(f=>f.key==="total")));
+});

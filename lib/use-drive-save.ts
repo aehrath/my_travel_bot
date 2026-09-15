@@ -4,7 +4,7 @@ import {readLatestDriveDraft,publishLiveDraft} from "./drive-live-sync";
 import {pushBackup,isDriveConnected,connectDrive} from "./drive";
 import {publishOwnerTrips,publishInvitedTrips} from "./trip-sharing";
 import {encrypt,writeVault,readVault,readLocalSetting,writeLocalSetting,type Envelope,type Keyring} from "./vault";
-import {saveDriveDraft,hasLocalDriveChanges,type DriveSaveCheckpoint} from "./drive-save-state";
+import {saveDriveDraft,reconcileDriveDraft,hasLocalDriveChanges,type DriveSaveCheckpoint} from "./drive-save-state";
 import type {Vault} from "./travel";
 import type {TripSource} from "./trip-access";
 export function useDriveSave(envelope:Envelope|undefined,ring:Keyring|null,vault:Vault,sources:TripSource[],onMerge:(vault:Vault,envelope:Envelope)=>void){
@@ -38,5 +38,10 @@ export function useDriveSave(envelope:Envelope|undefined,ring:Keyring|null,vault
   finally{running.current=false;setSaving(false);}
  }
  const status=!envelope?"":saving?"Saving to Google Drive…":error||(!ring?"Local vault is locked":checkpoint===undefined?"Checking last Google Drive save…":dirty?"Local changes · Not saved to Google Drive":"Saved to Google Drive");
- return {save,saving,dirty,checking:checkpoint===undefined,status};
+ async function markReconciled(current:Envelope){
+  if(current.salt!==envelope?.salt)return;
+  const saved=await reconcileDriveDraft(current,{read:readVault,checkpoint:next=>writeLocalSetting("drive-saved-checkpoint:"+current.salt,next)});
+  if(saved){setCheckpoint(saved);setError("");}
+ }
+ return {save,markReconciled,saving,dirty,checking:checkpoint===undefined,status};
 }

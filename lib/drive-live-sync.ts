@@ -4,6 +4,7 @@ import {DriveFileAccessError} from "./open-invitation";
 import {mergeSharedUpdates,mergeVaultImport} from "./merge-vault";
 import {driveDraftMarker,type DriveSaveCheckpoint} from "./drive-save-state";
 import {decryptWithKey,encrypt,readVault,readLocalSetting,writeLocalSetting,type Envelope,type Keyring} from "./vault";
+import {vaultDifferences,sameValue} from "./vault-diff";
 import type {Vault} from "./travel";
 function recordName(item:{id:string}){const record=item as {id:string;name?:string;title?:string;fileName?:string};return record.title||record.name||record.fileName||record.id;}
 export type DriveConflict={kind:"trips"|"bookings"|"artifacts";id:string;name:string;local:Record<string,unknown>;remote:Record<string,unknown>};
@@ -11,12 +12,12 @@ export function reviewLiveDraft(local:Vault,remote:Vault,base:Vault|undefined){
  const conflicts:DriveConflict[]=[];
  const deleted=new Set([...(local.deletedTripIds??[]),...(remote.deletedTripIds??[])]);
  for(const kind of ["trips","bookings","artifacts"] as const){
-  const old=new Map(base?.[kind].map(item=>[item.id,JSON.stringify(item)]));
+  const old=new Map(base?.[kind].map(item=>[item.id,item]));
   const incoming=new Map(remote[kind].map(item=>[item.id,item]));
   for(const item of local[kind]){
    if(deleted.has(kind==="trips"?item.id:(item as {tripId:string}).tripId))continue;
-   const other=incoming.get(item.id),here=JSON.stringify(item),there=JSON.stringify(other),before=old.get(item.id);
-   if(other&&here!==there&&(!base||(here!==before&&there!==before)))conflicts.push({kind,id:item.id,name:recordName(item),local:item,remote:other});
+   const other=incoming.get(item.id),before=old.get(item.id);
+   if(other&&!sameValue(item,other)&&(!base||(!sameValue(item,before)&&!sameValue(other,before))))conflicts.push({kind,id:item.id,name:recordName(item),local:item,remote:other});
   }
  }
  return {vault:base?mergeSharedUpdates(local,remote,base):mergeVaultImport(local,remote),conflicts};
@@ -47,7 +48,7 @@ export async function readLatestDriveDraft(local:Vault,ring:Keyring,allowConflic
   catch(error){if(!(error instanceof DriveFileAccessError))throw error;}
  }
  if(!file)file=await findLiveVault(ring.salt);
- if(!file)return {vault:local,conflicts:[] as DriveConflict[],file:null,envelope:null,index:null as VaultIndex|null,document:null};
+ if(!file)return {vault:local,remoteVault:null as Vault|null,matchesDrive:false,conflicts:[] as DriveConflict[],file:null,envelope:null,index:null as VaultIndex|null,document:null};
  let previous=await readLocalSetting<Envelope>("drive-live-base:"+ring.salt);
  // A fresh ETag is required on every read. Reuse only the exact encrypted base
  // associated with that file revision, never an arbitrary local draft.
@@ -63,7 +64,7 @@ export async function readLatestDriveDraft(local:Vault,ring:Keyring,allowConflic
  }
  const base=previous===envelope?remote:previous?(await decryptWithKey(previous,ring)).vault:undefined;
  const review=reviewLiveDraft(local,remote,base);
- return {vault:allowConflicts?review.vault:mergeLiveDraft(local,remote,base),conflicts:review.conflicts,file:after,envelope,index,document};
+ return {vault:allowConflicts?review.vault:mergeLiveDraft(local,remote,base),remoteVault:remote,matchesDrive:vaultDifferences(review.vault,remote).length===0,conflicts:review.conflicts,file:after,envelope,index,document};
 }
 export async function rememberDriveBase(envelope:Envelope,file?:SharedDriveVault|null,document?:Envelope|null){
  const previous=await readLocalSetting<Envelope>("drive-live-base:"+envelope.salt);

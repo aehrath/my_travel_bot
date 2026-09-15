@@ -11,3 +11,13 @@ export async function saveDriveDraft(envelope:Envelope,services:{read:()=>Promis
  await services.checkpoint(checkpoint);
  return checkpoint;
 }
+
+// A downloaded/reconciled draft already present on Drive needs no upload.
+// Compare revisions so a concurrent local edit is never marked as saved.
+export async function reconcileDriveDraft(envelope:Envelope,services:{read:()=>Promise<Envelope|undefined>;checkpoint:(saved:DriveSaveCheckpoint)=>Promise<void>}){
+ const current=await services.read();
+ if(!current||driveDraftMarker(current)!==driveDraftMarker(envelope))return null;
+ const checkpoint={marker:driveDraftMarker(envelope),savedAt:new Date().toISOString()};
+ await services.checkpoint(checkpoint);
+ return checkpoint;
+}
