@@ -33,7 +33,8 @@ export async function prepareDriveParts(vault:Vault,ring:Keyring,previous:VaultI
 }
 
 export async function readDriveParts(document:Envelope,ring:Keyring,download:(id:string)=>Promise<Envelope>):Promise<{vault:Vault;index:VaultIndex}>{
- const payload=await decryptPayload(document,ring);
+ let payload:unknown;
+ try{payload=await decryptPayload(document,ring);}catch{throw new Error("The main Google Drive vault could not be unlocked. The passphrase does not match this saved vault, or its encrypted file is damaged. No trips were changed.");}
  if((payload as {format?:string})?.format!=="travel-vault-index")throw new Error("This Drive file uses the retired single-file format. Your local changes are kept.");
  const index=indexSchema.parse(payload);
  const seen=new Set<string>();
@@ -43,7 +44,8 @@ export async function readDriveParts(document:Envelope,ring:Keyring,download:(id
   seen.add(identity);
   const cached=await readLocalSetting<Envelope>(cacheKey(ring,ref.id));
   const envelope=cached??await download(ref.id);
-  const value=await decryptPayload(envelope,ring);
+  let value:unknown;
+  try{value=await decryptPayload(envelope,ring);}catch{throw new Error("Your passphrase unlocked the main vault, but a linked "+ref.kind+" file could not be decrypted. This is a file problem, not an incorrect passphrase. No trips were changed.");}
   if(await digest(value)!==ref.hash)throw new Error("A linked Drive file is damaged or changed. Your local changes are kept.");
   if(!cached)await writeLocalSetting(cacheKey(ring,ref.id),envelope);
   return {ref,value};

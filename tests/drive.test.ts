@@ -410,3 +410,13 @@ test("sharing discovery excludes internal linked files before Drive applies its 
   assert.match(query,/not title contains 'my-travel-bot-shared-live-'/);
  }finally{disconnectDrive();globalThis.fetch=previousFetch;Object.assign(globalThis,{window:previousWindow});}
 });
+
+test("Drive unlock errors distinguish the main vault from a linked file",async()=>{
+ const {derive,encryptPayload}=await import("../lib/vault");
+ const ring=await derive("original vault passphrase"),wrong=await derive("another vault passphrase",ring.salt);
+ const document=await encryptPayload({format:"travel-vault-index",version:1,bookingOrder:[],parts:[]},ring);
+ await assert.rejects(()=>readDriveParts(document,wrong,async()=>{throw new Error("must not download");}),/main Google Drive vault could not be unlocked/);
+ assert.equal((await readDriveParts(document,ring,async()=>{throw new Error("no parts");})).vault.trips.length,0);
+ const linked=await encryptPayload({format:"travel-vault-index",version:1,bookingOrder:[],parts:[{kind:"trip",key:"a",id:"broken-"+crypto.randomUUID(),hash:"0".repeat(64)}]},ring);
+ await assert.rejects(()=>readDriveParts(linked,ring,async()=>encryptPayload({trip:{id:"a"},bookings:[]},wrong)),/passphrase unlocked the main vault/);
+});

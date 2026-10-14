@@ -1026,3 +1026,45 @@ test("Drive differences ignore record/property order but show every content chan
  const b=booking();local.bookings=[b];remote.bookings=[{...b,total:b.total+1}];
  assert.ok(vaultDifferences(local,remote).some(d=>d.fields.some(f=>f.key==="total")));
 });
+
+test("past trips archive by their final day, keeping empty and ongoing trips active",async()=>{
+ const {archivedTripIds}=await import("../lib/trip-archive");
+ const vault=emptyVault();vault.trips=["past","current","future","empty"].map(id=>({id,name:id,destination:"",notes:""}));
+ vault.bookings=[{...booking(),id:"past",tripId:"past",end:"2026-09-30T11:00",endZone:"America/Los_Angeles"},{...booking(),id:"today",tripId:"current",end:"2026-10-13T08:00",endZone:"America/Los_Angeles"},{...booking(),id:"future",tripId:"future",end:"2026-12-31T11:00",endZone:"Pacific/Fiji"}];
+ const before=JSON.stringify(vault);
+ assert.deepEqual([...archivedTripIds(vault,new Date("2026-10-13T20:00:00Z"))],["past"]);
+ vault.bookings.push({...booking(),id:"later",tripId:"past",end:"2026-12-31T11:00",endZone:"Pacific/Fiji"});
+ assert.equal(archivedTripIds(vault,new Date("2026-10-13T20:00:00Z")).has("past"),false);
+ vault.bookings.pop();assert.equal(JSON.stringify(vault),before);
+ vault.bookings[1].endZone="Pacific/Fiji";
+ assert.equal(archivedTripIds(vault,new Date("2026-10-13T20:00:00Z")).has("current"),true);
+});
+
+const agodaReceipt=`Booking No. 1065927718
+Payment Date October 14, 2026
+Receipt
+Customer Name & Address
+Name ALEXANDER EHRATH
+Description Amount
+Hotel Name Hotel Grand Chancellor Melbourne
+Period December 31, 2026 - January 1, 2027 (1
+night(s))
+Room Type Premier King Room
+# of Rms. 1
+# of Extra Beds 0
+Total Room Charges USD 280.97
+Total Extra Bed Charges USD 0.00
+GRAND TOTAL USD 280.97
+Total Charge USD 280.97`;
+test("hotel receipt imports Period dates across years separately from Payment Date",()=>{
+ for(const text of [agodaReceipt,agodaReceipt.replace(/\n/g," "),agodaReceipt.replace(' - ',' – ')]){
+ const [b]=importConfirmation(text,"fiji","2026-10-13");
+ assert.equal(b.kind,"Hotel");assert.equal(b.title,"Hotel Grand Chancellor Melbourne");assert.equal(b.confirmation,"1065927718");
+ assert.equal(b.start,"2026-12-31T16:00");assert.equal(b.end,"2027-01-01T11:00");assert.equal(b.zone,"Australia/Melbourne");
+ assert.equal(b.total,280.97);assert.equal(b.currency,"USD");assert.equal(b.payments.length,1);assert.equal(b.payments[0].date,"2026-10-14");assert.equal(b.payments[0].amount,280.97);
+ assert.deepEqual(b.suggestedHotelTimes,["start","end"]);assert.equal(b.travelers,undefined);assert.equal(b.location,"");
+ }
+ assert.throws(()=>importConfirmation(agodaReceipt.replace('December 31, 2026','December 32, 2026'),"trip"),/Invalid hotel receipt date/);
+ assert.throws(()=>importConfirmation(agodaReceipt.replace('Total Charge USD 280.97','Total Charge USD 281.97'),"trip"),/disagree/);
+ assert.throws(()=>importConfirmation(agodaReceipt.replace('January 1, 2027','January 1'),"trip"),/both stay dates/);
+});

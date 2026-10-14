@@ -1,7 +1,7 @@
 import type {SharedDriveVault} from "./drive";
 import type {TripSource} from "./trip-access";
 import { vaultSchema, type Vault } from "./travel";
-export type Envelope={format:"travel-vault";version:1;salt:string;iv:string;ciphertext:string;updated:string;sharedRefresh?:boolean;onRestored?:()=>Promise<void>;tripBundle?:{file:SharedDriveVault;envelope:Envelope}[]};
+export type Envelope={format:"travel-vault";version:1;salt:string;iv:string;ciphertext:string;updated:string;sharedRefresh?:boolean;liveFile?:SharedDriveVault;onRestored?:()=>Promise<void>;tripBundle?:{file:SharedDriveVault;envelope:Envelope}[]};
 export type Keyring={key:CryptoKey;salt:string};
 const b64=(bytes:Uint8Array)=>{let s="";for(const b of bytes)s+=String.fromCharCode(b);return btoa(s);};
 const bytes=(s:string)=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
@@ -117,6 +117,15 @@ export async function writeLocalSetting(name:string,value:unknown):Promise<void>
 }
 export async function decryptImportedVault(envelope:Envelope,password:string,existing:Keyring|null){
  const key=existing?.salt===envelope.salt?existing:await derive(password,envelope.salt);
+ if(envelope.liveFile){
+  const {readDriveParts}=await import("./drive-parts");
+  const {pullBackup,getSharedVault}=await import("./drive");
+  const {vault}=await readDriveParts(envelope,key,pullBackup);
+  const after=await getSharedVault(envelope.liveFile.id);
+  if(after.etag!==envelope.liveFile.etag)throw new Error("Drive changed while opening your vault. Select it again to load the latest version.");
+  return {vault,ring:key,sources:[] as TripSource[],envelope:await encrypt(vault,key)};
+ }
+
  if(!envelope.tripBundle)return {...await decryptWithKey(envelope,key),sources:[] as TripSource[],envelope:parseEnvelope(envelope)};
  const combined:Vault={version:1,trips:[],bookings:[],artifacts:[]};const sources:TripSource[]=[];
  for(const part of envelope.tripBundle){

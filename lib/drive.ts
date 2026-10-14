@@ -256,3 +256,9 @@ export async function createLiveVault(salt:string,envelope:Envelope){
  if(!file)throw new Error("The live vault could not be confirmed. Your local changes are kept.");
  return file;
 }
+
+export async function listLiveVaults():Promise<SharedDriveVault[]>{
+ const q=encodeURIComponent("trashed=false and 'me' in owners and mimeType='application/json' and title contains 'my-travel-bot-shared-live-'");
+ const result=await (await request("drive/v2/files?q="+q+"&fields=items("+sharedFields+")&maxResults=100")).json() as {items?:SharedDriveVault[]};
+ return (result.items??[]).filter(file=>file.title.startsWith("my-travel-bot-shared-live-"));
+}

@@ -401,7 +401,35 @@ function southSeaCruiseConfirmation(text:string,tripId:string):Booking[]|null {
   return b;
  });
 }
+function hotelPaymentReceipt(text:string,tripId:string):Booking[]|null {
+ const plain=clean(text).replace(/\s+/g," ");
+ if(!/\bHotel Name\b/i.test(plain)||!/\bPeriod\b/i.test(plain)||!/\bBooking No\.?/i.test(plain))return null;
+ const datePattern="(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\s+(\\d{1,2}),?\\s+(\\d{4})";
+ const period=new RegExp("\\bPeriod\\s+"+datePattern+"\\s*[-–—]\\s*"+datePattern,"i").exec(plain);
+ if(!period)throw new Error("Include the hotel Period with both stay dates and their years. The payment date is not a travel date.");
+ const date=(month:string,day:string,year:string)=>{
+  const value=`${year}-${String(months.indexOf(month.slice(0,3).toLowerCase())+1).padStart(2,"0")}-${day.padStart(2,"0")}`;
+  const parsed=new Date(value+"T00:00:00Z");
+  if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==value)throw new Error("Invalid hotel receipt date.");
+  return value;
+ };
+ const start=date(period[1],period[2],period[3]),end=date(period[4],period[5],period[6]);
+ if(end<=start)throw new Error("Hotel checkout must be after check-in.");
+ const title=/\bHotel Name\s+(.+?)\s+Period\b/i.exec(plain)?.[1]?.trim();
+ if(!title)throw new Error("Include the hotel name before its stay period.");
+ const totals=[...plain.matchAll(/\b(?:GRAND TOTAL|Total Charge)\s+([A-Z]{3})\s*([\d,]+\.\d{2})\b/gi)];
+ if(!totals.length)throw new Error("Include the hotel receipt's grand total and currency.");
+ const total=Number(totals[0][2].replace(/,/g,"")),currency=totals[0][1].toUpperCase();
+ if(totals.some(match=>Number(match[2].replace(/,/g,""))!==total||match[1].toUpperCase()!==currency))throw new Error("The receipt's total charges disagree. Review the amounts before importing.");
+ const payment=new RegExp("\\bPayment Date\\s+"+datePattern,"i").exec(plain);
+ const paymentDate=payment?date(payment[1],payment[2],payment[3]):"";
+ const zone=/\bHotel Grand Chancellor Melbourne\b/i.test(title)?"Australia/Melbourne":"";
+ const booking:Booking={...blankBooking(tripId),kind:"Hotel",title,location:"",confirmation:/\bBooking No\.?\s*:?\s*([A-Z0-9-]+)/i.exec(plain)?.[1]??"",start:start+"T16:00",end:end+"T11:00",suggestedHotelTimes:["start","end"],zone,endZone:zone,total,currency,payments:paymentDate&&total>0?[{id:uid(),amount:total,date:paymentDate,note:"Paid — imported hotel receipt"}]:[],notes:"Import review: Stay dates come from Period. Check-in/out times were not supplied; 4 PM and 11 AM are suggested defaults. "+(zone?"Time zone inferred as Australia/Melbourne; confirm it.":"Enter the property's time zone.")+"\n\n"+text};
+ bookingSchema.parse({...booking,zone:zone||"UTC",endZone:zone||"UTC"});
+ return [booking];
+}
 function parseConfirmation(text:string,tripId:string,referenceDate:string):Booking[]{
+ const receipt=hotelPaymentReceipt(text,tripId);if(receipt)return receipt;
  const passkey=passkeyHotelConfirmation(text,tripId,referenceDate);if(passkey)return passkey;
  const cruise=southSeaCruiseConfirmation(text,tripId);if(cruise)return cruise;
  const shuttle=shuttleConfirmation(text,tripId);if(shuttle)return shuttle;
