@@ -42,9 +42,8 @@ export function PdfPreview({url,name}:{url:string;name:string}){
   setPdf(null);setError("");
   void (async()=>{
    const pdfjs=await import("pdfjs-dist");
-   const worker=await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
    if(disposed)return;
-   pdfjs.GlobalWorkerOptions.workerSrc=worker.default;
+   pdfjs.GlobalWorkerOptions.workerSrc=`/pdf-worker/pdf.worker-${pdfjs.version}.mjs`;
    task=pdfjs.getDocument({url});
    const doc=await task.promise;
    if(!disposed)setPdf(doc);

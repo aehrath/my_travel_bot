@@ -50,3 +50,6 @@ next-env.d.ts
 *.tar.gz
 *.travel
 !/.env.example
+
+# Generated verbatim PDF.js worker, prepared before dev/build
+/public/pdf-worker/
