@@ -1068,3 +1068,127 @@ test("hotel receipt imports Period dates across years separately from Payment Da
  assert.throws(()=>importConfirmation(agodaReceipt.replace('Total Charge USD 280.97','Total Charge USD 281.97'),"trip"),/disagree/);
  assert.throws(()=>importConfirmation(agodaReceipt.replace('January 1, 2027','January 1'),"trip"),/both stay dates/);
 });
+
+const agodaConfirmation=`|   |
+| - |
+## **Your booking is now confirmed!**
+Hi ALEXANDER EHRATH,
+For reference, your booking ID is 1075392566. To view, cancel, or modify your booking, use our easy self service.
+| [Manage my booking](https://example.com/manage) |
+| --- |
+## Amora Jamison Hotel
+[5.0 stars rating out of five](https://example.com/stars.png)
+| [image](https://example.com/hotel.jpeg) |   |
+| --- | - |
+[11 Jamison Street, Sydney, Australia](https://www.google.com/maps/search/11+Jamison+Street), 2000
+| [Directions](https://www.google.com/maps/search/Amora+Jamison+Hotel) |
+| --- |
+Check in
+|    |
+| :- |
+Thursday January 7, 2027
+|    |
+| :- |
+(after 2:00 PM)
+Check out
+|    |
+| -: |
+Monday January 11, 2027
+|    |
+| -: |
+(before 11:00 AM)`;
+
+test('Agoda confirmation imports full dates, local times, property and separate address',()=>{
+ for(const text of [agodaConfirmation,agodaConfirmation.replaceAll('Check in','Check-in').replaceAll('Check out','Checkout')]){
+  const [b]=importConfirmation(text,'trip','2026-11-07');
+  assert.equal(b.kind,'Hotel');assert.equal(b.title,'Amora Jamison Hotel');assert.equal(b.confirmation,'1075392566');
+  assert.equal(b.location,'11 Jamison Street, Sydney, Australia, 2000');
+  assert.equal(b.start,'2027-01-07T14:00');assert.equal(b.end,'2027-01-11T11:00');
+  assert.equal(b.zone,'Australia/Sydney');assert.equal(b.endZone,'Australia/Sydney');
+  assert.deepEqual(b.suggestedHotelTimes,[]);assert.equal(b.total,0);assert.deepEqual(b.payments,[]);
+  assert.ok(b.notes.includes(text));
+ }
+ assert.throws(()=>importConfirmation(agodaConfirmation.replace('Thursday January 7','Friday January 7'),'trip'),/weekday/);
+ assert.throws(()=>importConfirmation(agodaConfirmation.replace('January 11','January 32'),'trip'),/weekday/);
+});
+
+test('Agoda rich email tables work with inline labels and no rating image text',()=>{
+ const pasted=`| Your booking is now confirmed!<br>Hi ALEXANDER EHRATH,<br>For reference, your booking ID is 1075392566. To view, cancel, or modify your booking, use our easy self service.<br>Manage my booking<br>Amora Jamison Hotel<br>11 Jamison Street, Sydney, Australia, 2000<br>Directions<br> | Check in | Check out |
+| --- | --- | --- |
+| | Thursday January 7, 2027 | Monday January 11, 2027 |
+| | (after 2:00 PM) | (before 11:00 AM) |`;
+ for(const text of [pasted,pasted.replace('Check in | Check out','Check in Thursday January 7, 2027 | Check out Monday January 11, 2027').replace('| | Thursday January 7, 2027 | Monday January 11, 2027 |','')]){
+  const [b]=importConfirmation(text,'trip','2026-11-07');
+  assert.equal(b.kind,'Hotel');assert.equal(b.title,'Amora Jamison Hotel');
+  assert.equal(b.confirmation,'1075392566');assert.equal(b.location,'11 Jamison Street, Sydney, Australia, 2000');
+  assert.equal(b.start,'2027-01-07T14:00');assert.equal(b.end,'2027-01-11T11:00');assert.equal(b.zone,'Australia/Sydney');
+ }
+});
+
+const jetstarItinerary=`Jetstar
+This is not a boarding pass
+Your Flight Itinerary
+Itinerary issue date:
+07 Nov 2026
+Passenger Details
+Name MR Alexander Ehrath
+Address 92069, United States of America
+Payment of $373.00 AUD received
+Booking reference
+KR458A
+Web Check-in
+Check-in options
+Check in online, it’s simple, quick and contactless - opens 48 hours before your flight.
+Web Check-in
+Can’t check in online?: Use your booking reference and surname to check in at the airport. For details, see: When do I need to get to the airport.
+Your flights Booking date: 07 Nov 2026
+Date Flight number Departing Arriving
+Mon 11 Jan 2027
+12:55pm / 12:55
+Change flight
+JQ814Jetstar
+Airbus A320
+Fare: Starter
+Cabin: Economy
+Flight duration:
+1hr 30min
+Sydney (Kingsford Smith)
+Mon 11 Jan 2027
+12:55pm / 12:55
+Sydney Airport - T2 Domestic
+Brisbane
+Mon 11 Jan 2027
+1:25pm / 13:25
+Brisbane Domestic Terminal
+Passenger: Seat: Carry-on Baggage: Checked Baggage: Extras and services requested:
+MR Alexander Ehrath (9D) 7kg (Manage) 20 kg (Manage) Book below
+MR Maximillian Ehrath (9E) 7kg (Manage) 20 kg (Manage) Book below
+MRS Karina Ehrath (9F) 7kg (Manage) 0 kg (Manage) Book below`;
+
+test('Jetstar itinerary uses airport dates, three passengers and one AUD payment',()=>{
+ for(const text of [jetstarItinerary,jetstarItinerary.replace(/\n/g,' '),jetstarItinerary.split('\n').map(line=>'| '+line+' |\n| --- |').join('\n')]){
+  const [b]=importConfirmation(text,'trip','2026-11-07');
+  assert.equal(b.kind,'Flight');assert.equal(b.flightNumber,'JQ814');assert.equal(b.confirmation,'KR458A');
+  assert.match(b.fromAirport,/^SYD/);assert.match(b.toAirport,/^BNE/);
+  assert.equal(b.start,'2027-01-11T12:55');assert.equal(b.end,'2027-01-11T13:25');
+  assert.equal(b.zone,'Australia/Sydney');assert.equal(b.endZone,'Australia/Brisbane');
+  assert.equal((instant(b.end,b.endZone)-instant(b.start,b.zone))/60000,90);
+  assert.equal(b.travelers,3);assert.equal(b.total,373);assert.equal(b.currency,'AUD');assert.equal(b.priceBasis,'total');
+  assert.equal(paid(b),373);assert.equal(balance(b),0);assert.equal(b.payments[0].date,'2026-11-07');assert.ok(b.notes.includes(text));
+ }
+});
+test('Jetstar rejects inconsistent time pairs, weekday, duration and multiple flights',()=>{
+ for(const text of [jetstarItinerary.replace('1:25pm / 13:25','1:25pm / 14:25'),jetstarItinerary.replaceAll('Mon 11 Jan','Tue 11 Jan'),jetstarItinerary.replace('1hr 30min','2hr 30min'),jetstarItinerary+'\nJQ815Jetstar'])assert.throws(()=>importConfirmation(text,'trip'));
+});
+
+
+test('Jetstar rich email import does not depend on removed airline logo text',()=>{
+ const noLogos=jetstarItinerary.replaceAll('Jetstar','').trim();
+ for(const text of [noLogos,noLogos.replace('Your Flight Itinerary',''),noLogos.split('\n').map(line=>'| '+line+' |\n| --- |').join('\n')]){
+  const [b]=importConfirmation(text,'trip','2026-11-07');
+  assert.equal(b.kind,'Flight');assert.equal(b.flightNumber,'JQ814');assert.equal(b.confirmation,'KR458A');
+  assert.equal(b.start,'2027-01-11T12:55');assert.equal(b.end,'2027-01-11T13:25');
+  assert.equal(b.zone,'Australia/Sydney');assert.equal(b.endZone,'Australia/Brisbane');
+  assert.equal(b.travelers,3);assert.equal(b.total,373);assert.equal(paid(b),373);
+ }
+});

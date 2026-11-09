@@ -264,21 +264,21 @@ function compactHotelConfirmation(text:string,tripId:string,referenceDate:string
  return bookings.map(booking=>({...booking,suggestedHotelTimes:["start","end"],title,location,notes:booking.notes.split("\n\n")[0].replace("Property name is absent. A provisional name uses the address; rename it when known. ", "").replace("The cancellation deadline is retained in notes, not used as a payment due date.", "")+" Check-in/out times were not supplied; 16:00 and 11:00 are suggested defaults; you can use them or edit them. Payment details describe the price, not proof of payment; no payment is recorded unless explicitly dated.\n\n"+text}));
 }
 function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):Booking[]|null {
- const plain=clean(text);
+ const plain=clean(text.replace(/\|/g,"\n")).replace(/\bCheck[ -]?(in|out)\b/gi,(_,end:string)=>`Check-${end.toLowerCase()}`);
  if(!/\bCheck-in\b/i.test(plain)||!/\bCheck-out\b/i.test(plain))return null;
  // Limit parsing to the stay section: cancellation dates/times are not checkout or payment deadlines.
  const stay=plain.split(/\bFree cancellation|\bCancellation policy/i)[0];
- const dates=[...stay.matchAll(/\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat),?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:,?\s+(\d{4}))?\b/gi)];
+ const dates=[...stay.matchAll(/\b(Sun(?:day)?|Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?),?\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2})(?:,?\s+(\d{4}))?\b/gi)];
  if(dates.length!==2)throw new Error("Could not identify exactly two hotel stay dates. Include both check-in and check-out dates.");
  const warnings:string[]=[];
- const makeDate=(match:RegExpMatchArray,year:number)=>`${year}-${String(months.indexOf(match[2].toLowerCase())+1).padStart(2,"0")}-${match[3].padStart(2,"0")}`;
+ const makeDate=(match:RegExpMatchArray,year:number)=>`${year}-${String(months.indexOf(match[2].slice(0,3).toLowerCase())+1).padStart(2,"0")}-${match[3].padStart(2,"0")}`;
  let startDate=makeDate(dates[0],Number(dates[0][4]||referenceDate.slice(0,4)));
  if(!dates[0][4]&&startDate<referenceDate)startDate=makeDate(dates[0],Number(referenceDate.slice(0,4))+1);
  let endDate=makeDate(dates[1],Number(dates[1][4]||startDate.slice(0,4)));
  if(!dates[1][4]&&endDate<startDate)endDate=makeDate(dates[1],Number(startDate.slice(0,4))+1);
  for(const [i,value] of [startDate,endDate].entries()){
   const parsed=new Date(value+"T00:00:00Z");
-  if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==value||["sun","mon","tue","wed","thu","fri","sat"][parsed.getUTCDay()]!==dates[i][1].toLowerCase())throw new Error("Hotel date and weekday disagree. Add the correct four-digit years to both stay dates before importing.");
+  if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==value||["sun","mon","tue","wed","thu","fri","sat"][parsed.getUTCDay()]!==dates[i][1].slice(0,3).toLowerCase())throw new Error("Hotel date and weekday disagree. Add the correct four-digit years to both stay dates before importing.");
  }
  if(endDate<=startDate)throw new Error("Hotel checkout must be after check-in.");
  if(!dates[0][4]||!dates[1][4])warnings.push(`Stay dates inferred as ${startDate} to ${endDate}; confirm the omitted year.`);
@@ -297,14 +297,22 @@ function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):B
  }else suggestedHotelTimes.push("start","end");
  if(suggestedHotelTimes.length)warnings.push("Missing hotel times have suggested defaults: 4 PM check-in and 11 AM checkout. Supplied times are kept.");
  const beforeStay=stay.slice(0,stay.search(/\bCheck-in\b/i)).trim();
+ const agodaId=/\byour booking ID is\s*:?\s*(\d+)\b/i.exec(beforeStay)?.[1];
+ const propertyLines=beforeStay.split("\n");
+ const ratingIndex=propertyLines.findIndex(line=>/^\d+(?:\.\d+)? stars rating out of five$/i.test(line));
+ // Rich email paste drops rating images, so the property must also be found without their alt text.
+ const agodaName=agodaId?(ratingIndex>0?propertyLines[ratingIndex-1]:propertyLines.find(line=>
+  /\b(?:Hotel|Resort|Inn|Lodge|Apartments)\b/i.test(line)&&!/[.!?]$/.test(line)&&
+  !/\b(?:booking|confirmed|manage|directions|self service)\b/i.test(line)&&!/^\d/.test(line)
+ )||""):"";
  // Expedia puts traveler counts before the address, separated by empty table cells.
  // Require a street suffix so an itinerary number or guest count cannot become the address.
  const addressSection=beforeStay.split(/\bAdults\s*,?\s*\d+/i).at(-1)!.trim();
  const street=/\b\d+[A-Za-z]?\s+(?:[A-Za-z][A-Za-z.'’-]*\s+){1,6}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Highway|Hwy|Court|Ct|Place|Pl)\b[\s\S]*$/i.exec(addressSection)?.[0];
  const namedStreet=/\b(?:[A-Za-z][A-Za-z.'’-]*\s+){1,4}(?:Highway|Road|Street|Avenue|Boulevard|Lane)\b[^\n]*$/i.exec(addressSection)?.[0];
- const location=(street||namedStreet||beforeStay).replace(/\s+/g," ").trim();
+ const location=(street||namedStreet||beforeStay).split(/\nDirections\b/i)[0].replace(/\s+/g," ").trim();
  const itinerary=/\bExpedia itinerary\s*:\s*([A-Z0-9-]+)/i.exec(beforeStay);
- const propertyName=itinerary?beforeStay.slice(0,itinerary.index).trim().split("\n").at(-1)?.trim()||"":"";
+ const propertyName=agodaName||(itinerary?beforeStay.slice(0,itinerary.index).trim().split("\n").at(-1)?.trim()||"":"");
  const title=propertyName||("Hotel stay"+(location?" · "+location:" · "+startDate)).slice(0,300);
  const regionNames=new Intl.DisplayNames(["en"],{type:"region"});
  const countries=[...new Set(airports.map(a=>a.country))].filter(code=>{try{const name=regionNames.of(code);return name&&new RegExp(`\\b${name}\\b`,"i").test(location);}catch{return false;}});
@@ -335,7 +343,7 @@ function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):B
   if(/\bPaid on\b/i.test(price)&&!payments.length)warnings.push("The payment date or amount could not be read; add the payment manually.");
  }else warnings.push("Cost is absent; add it when known.");
  warnings.push("The cancellation deadline is retained in notes, not used as a payment due date.");
- const booking:Booking={...blankBooking(tripId),kind:"Hotel",title,location,confirmation:itinerary?.[1]||"",suggestedHotelTimes,start:startDate+"T"+startTime,end:endDate+"T"+endTime,zone,endZone:zone,total,currency,payments,notes:"Import review: "+warnings.join(" ")+"\n\n"+text};
+ const booking:Booking={...blankBooking(tripId),kind:"Hotel",title,location,confirmation:itinerary?.[1]||agodaId||"",suggestedHotelTimes,start:startDate+"T"+startTime,end:endDate+"T"+endTime,zone,endZone:zone,total,currency,payments,notes:"Import review: "+warnings.join(" ")+"\n\n"+text};
  bookingSchema.parse({...booking,zone:zone||"UTC",endZone:zone||"UTC"});
  return [booking];
 }
@@ -428,7 +436,45 @@ function hotelPaymentReceipt(text:string,tripId:string):Booking[]|null {
  bookingSchema.parse({...booking,zone:zone||"UTC",endZone:zone||"UTC"});
  return [booking];
 }
+function jetstarConfirmation(text:string,tripId:string,referenceDate:string):Booking[]|null {
+ const plain=clean(text).replace(/\s+/g," ");
+ // Airline logos are images and are removed by the rich-text paste sanitizer.
+ // Recognize the carrier by its flight code, without requiring logo alt text.
+ const flights=[...plain.matchAll(/\bJQ\s*(\d{1,4})(?=Jetstar|\b)/gi)];
+ if(!flights.length||!(/\bFlight Itinerary\b/i.test(plain)||(/\bDeparting\b/i.test(plain)&&/\bArriving\b/i.test(plain))))return null;
+ if(flights.length!==1)throw new Error("Paste one Jetstar flight at a time so the booking payment is not counted twice.");
+ // Ignore the issue/booking dates and the repeated departure summary above the flight number.
+ const route=plain.slice(flights[0].index!+flights[0][0].length).split(/\bPassenger\s*:/i)[0];
+ const dates=[...route.matchAll(/\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})\s+(\d{1,2}:\d{2}\s*(?:am|pm)(?:\s*\/\s*\d{1,2}:\d{2})?)/gi)];
+ if(dates.length!==2)throw new Error("Include both Jetstar airport names, travel dates, and local times.");
+ const endpoints=dates.map((m,i)=>{
+  const before=route.slice(i?dates[0].index!+dates[0][0].length:0,m.index).trim();
+  const aliases:Record<string,string>={"Sydney (Kingsford Smith)":"SYD","Brisbane":"BNE"};
+  const code=Object.entries(aliases).find(([label])=>before.toLowerCase().endsWith(label.toLowerCase()))?.[1];
+  const candidates=code?airports.filter(a=>a.code===code):airports.filter(a=>new RegExp("\\b"+a.code+"$","i").test(before));
+  if(candidates.length!==1)throw new Error("Could not identify the Jetstar airport. Include its three-letter airport code beside the travel date.");
+  const date=`${m[4]}-${String(months.indexOf(m[3].toLowerCase())+1).padStart(2,"0")}-${m[2].padStart(2,"0")}`;
+  const parsed=new Date(date+"T00:00:00Z");
+  if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==date||["sun","mon","tue","wed","thu","fri","sat"][parsed.getUTCDay()]!==m[1].toLowerCase())throw new Error("Jetstar travel date and weekday disagree. Check the dates.");
+  return {airport:candidates[0],time:date+"T"+clock(m[5])};
+ });
+ const [dep,arr]=endpoints;
+ const duration=/\bFlight duration:\s*(?:(\d+)\s*hr\s*)?(?:(\d+)\s*min)?/i.exec(route);
+ const minutes=duration?Number(duration[1]||0)*60+Number(duration[2]||0):0;
+ if(minutes&&Math.abs((instant(arr.time,arr.airport.zone)-instant(dep.time,dep.airport.zone))/60000-minutes)>1)throw new Error("Jetstar flight duration does not match the dates and local times. Review the itinerary.");
+ const payment=/\bPayment of\s*\$([\d,]+\.\d{2})\s+([A-Z]{3})\s+received\b/i.exec(plain);
+ const total=payment?Number(payment[1].replace(/,/g,"")):0;
+ const passengerSection=plain.split(/\bPassenger\s*:/i)[1]||"";
+ const travelers=[...passengerSection.matchAll(/\b(?:MR|MRS|MS|MISS|MSTR|DR)\s+[^()]+?\(\d+[A-Z]\)/gi)].length||undefined;
+ const booking:Booking={...blankBooking(tripId),kind:"Flight",airline:"Jetstar (JQ)",flightNumber:"JQ"+flights[0][1],
+  fromAirport:airportLabel(dep.airport),toAirport:airportLabel(arr.airport),start:dep.time,end:arr.time,zone:dep.airport.zone,endZone:arr.airport.zone,
+  confirmation:/\bBooking reference\s+([A-Z0-9]{6})\b/i.exec(plain)?.[1]||"",travelers,priceBasis:"total",total,currency:payment?.[2].toUpperCase()||"AUD",
+  payments:total>0?[{id:uid(),amount:total,date:referenceDate,note:"Payment received — Jetstar; payment date not supplied, defaults to import date"}]:[],
+  notes:"Import review: Airport time zones determine flight duration. "+(payment?"Payment received is treated as the total for this booking, not per passenger. Payment date was not supplied and defaults to today; confirm it.":"Cost was not supplied.")+"\n\n"+text};
+ return [bookingSchema.parse({...booking,title:flightReservationName(booking)})];
+}
 function parseConfirmation(text:string,tripId:string,referenceDate:string):Booking[]{
+ const jetstar=jetstarConfirmation(text,tripId,referenceDate);if(jetstar)return jetstar;
  const receipt=hotelPaymentReceipt(text,tripId);if(receipt)return receipt;
  const passkey=passkeyHotelConfirmation(text,tripId,referenceDate);if(passkey)return passkey;
  const cruise=southSeaCruiseConfirmation(text,tripId);if(cruise)return cruise;
