@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {itineraryOrder,reservationDuration,balanceDueDate,updateReservationTime,bookingSchema,blankBooking,emptyVault,balance,paid,instant,calendarExport,importBookings,importCalendar,vaultSchema} from "../lib/travel";
+import {itineraryOrder,reservationDuration,balanceDueDate,updateReservationTime,bookingSchema,blankBooking,emptyVault,balance,paid,money,instant,calendarExport,importBookings,importCalendar,vaultSchema} from "../lib/travel";
 import {derive,encrypt,decrypt} from "../lib/vault";
 import { searchAirports, airportLabel } from "../lib/airports";
 import { importConfirmation } from "../lib/confirmation-import";
@@ -1191,4 +1191,59 @@ test('Jetstar rich email import does not depend on removed airline logo text',()
   assert.equal(b.zone,'Australia/Sydney');assert.equal(b.endZone,'Australia/Brisbane');
   assert.equal(b.travelers,3);assert.equal(b.total,373);assert.equal(paid(b),373);
  }
+});
+
+const levelHotelConfirmation=`## Thanks, Alexander! Your itinerary number is 18855B1181813
+### Room 1 Confirmation #: 67711SH515132
+Confirmed
+Thank you for choosing our property. We look forward to your arrival.
+## Reservation Details
+### Hotel Information
+**Level Hotel Los Angeles Downtown - South Olive**
+888 S Olive St
+Los Angeles, California 90014-3006
+1-213-873-8400
+hospitalityreservations@onni.com
+[https://stayinglevel.com/destinations/los-angeles/downtown-south-olive/](https://stayinglevel.com/destinations/los-angeles/downtown-south-olive/)
+### Room 1
+#### Stay Information
+**Two Bedroom Suites: Two Bedroom Suite**
+Book Early & Save
+1 Night stay
+Tue, Dec 22, 2026 - Wed, Dec 23, 20261 Night stay
+5 Adults
+**Room Price$317.84**
+Including taxes and fees
+---
+#### Guest details
+Alexander Ehrath
+#### Payment details
+- [Discover](https://example.com/Discover.png)•••• 2162Deposit`;
+
+test('Level hotel confirmation separates room reference, address, joined dates and room total',()=>{
+ for(const text of [levelHotelConfirmation,levelHotelConfirmation.replace(/\n/g,' '),levelHotelConfirmation.split('\n').map(line=>'| '+line+' |\n| --- |').join('\n'),levelHotelConfirmation.replace('20261 Night','2026 1 Night')]){
+  const [b]=importConfirmation(text,'trip','2026-11-11');
+  assert.equal(b.kind,'Hotel');assert.equal(b.title,'Level Hotel Los Angeles Downtown - South Olive');
+  assert.equal(b.location,'888 S Olive St Los Angeles, California 90014-3006');assert.equal(b.confirmation,'67711SH515132');
+  assert.equal(b.start,'2026-12-22T16:00');assert.equal(b.end,'2026-12-23T11:00');
+  assert.equal(b.zone,'America/Los_Angeles');assert.equal(b.endZone,b.zone);
+  assert.equal(b.travelers,5);assert.equal(b.total,317.84);assert.equal(b.currency,'USD');assert.equal(b.priceBasis,'total');
+  assert.deepEqual(b.payments,[]);assert.deepEqual(b.suggestedHotelTimes,['start','end']);assert.ok(b.notes.includes(text));
+ }
+});
+test('Level hotel confirmation validates dates, nights and room count',()=>{
+ for(const text of [levelHotelConfirmation.replace('Tue, Dec 22','Mon, Dec 22'),levelHotelConfirmation.replaceAll('1 Night stay','2 Night stay'),levelHotelConfirmation.replace('Dec 23, 2026','Dec 32, 2026'),levelHotelConfirmation+'\nRoom 2 Confirmation #: ABC123'])assert.throws(()=>importConfirmation(text,'trip'));
+});
+
+
+test('Currency previews tolerate editing while saved reservations require a complete code',()=>{
+ for(const currency of ['', 'U', 'US', 'AU', 'US$', '123', 'USD ']){
+  assert.equal(money(1234.5,currency),'1,234.50');
+  assert.equal(bookingSchema.safeParse({...blankBooking("trip"),kind:"Hotel",title:"Stay",currency}).success,false);
+ }
+ assert.equal(money(1234.5,'USD'),'$1,234.50');
+ assert.equal(money(1234.5,'AUD'),'A$1,234.50');
+ assert.equal(money(1234.5,'JPY'),'¥1,235');
+ assert.equal(money(1234.5),'$1,234.50');
+ assert.equal(bookingSchema.safeParse({...blankBooking('trip'),kind:'Hotel',title:'Stay',currency:'AUD'}).success,true);
 });

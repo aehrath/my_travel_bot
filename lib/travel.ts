@@ -40,7 +40,7 @@ export const bookingSchema = z.object({
  airline:z.string().max(300).default(""),flightNumber:z.string().max(30).default(""),
  fromAirport:z.string().max(300).default(""),toAirport:z.string().max(300).default(""),
  location:z.string(),confirmation:z.string(),notes:z.string(),url:z.string().transform(normalizeProviderUrl).refine(v=>{if(!v)return true;try{const parsed=new URL(v);return ["https:","http:"].includes(parsed.protocol)&&!!parsed.hostname;}catch{return false;}},"Enter a valid website address"),
- total:z.number().nonnegative().finite(),currency:z.string().regex(/^[A-Z]{3}$/).refine(v=>{try{new Intl.NumberFormat("en",{style:"currency",currency:v});return true;}catch{return false;}}),
+ total:z.number().nonnegative().finite(),currency:z.string().regex(/^[A-Z]{3}$/, "Enter a three-letter currency code, such as USD or AUD.").refine(v=>{try{new Intl.NumberFormat("en",{style:"currency",currency:v});return true;}catch{return false;}}),
  travelers:z.number().int().min(1).max(10000).optional(),priceBasis:z.enum(["total","traveler"]).optional(),perTravelerPrice:z.number().nonnegative().finite().optional(),
  suggestedHotelTimes:z.array(z.enum(["start","end"])).optional(),
  dueDaysBefore:z.number().int().min(0).max(36500).nullable().optional(),
@@ -86,7 +86,12 @@ export type Artifact=z.infer<typeof artifactSchema>;
 export const emptyVault=():Vault=>({version:1,trips:[],bookings:[],artifacts:[]});
 export const paid=(b:{payments:{amount:number}[]})=>Math.round(b.payments.reduce((a,p)=>a+p.amount,0)*100)/100;
 export const balance=(b:Booking)=>Math.max(0,Math.round((b.total-paid(b))*100)/100);
-export const money=(n:number,c="USD")=>new Intl.NumberFormat("en-US",{style:"currency",currency:c}).format(n);
+export function money(n:number,c="USD"):string {
+ // Draft currency fields may be empty or partially typed. Keep the preview
+ // readable without falsely labeling the amount as a different currency.
+ if(!/^[A-Za-z]{3}$/.test(c))return new Intl.NumberFormat("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}).format(n);
+ return new Intl.NumberFormat("en-US",{style:"currency",currency:c}).format(n);
+}
 export function instant(local:string,tz:string):number{
  const target=Date.parse(local+"Z"); if(!Number.isFinite(target)||new Date(target).toISOString().slice(0,16)!==local)throw new Error("Invalid date");
  const fmt=new Intl.DateTimeFormat("sv-SE",{timeZone:tz,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"});

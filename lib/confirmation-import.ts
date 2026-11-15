@@ -473,7 +473,34 @@ function jetstarConfirmation(text:string,tripId:string,referenceDate:string):Boo
   notes:"Import review: Airport time zones determine flight duration. "+(payment?"Payment received is treated as the total for this booking, not per passenger. Payment date was not supplied and defaults to today; confirm it.":"Cost was not supplied.")+"\n\n"+text};
  return [bookingSchema.parse({...booking,title:flightReservationName(booking)})];
 }
+function propertyHotelConfirmation(text:string,tripId:string,referenceDate:string):Booking[]|null {
+ const flat=clean(text).replace(/\s+/g," ").replace(/(\d{4})(?=\d+\s+Nights?\s+stay\b)/gi,"$1 ");
+ if(!/\bHotel Information\b/i.test(flat)||!/\bStay Information\b/i.test(flat)||!/\bRoom\s+\d+\s+Confirmation\s*:/i.test(flat))return null;
+ const references=[...flat.matchAll(/\bRoom\s+\d+\s+Confirmation\s*:\s*([A-Z0-9-]+)/gi)];
+ if(references.length!==1)throw new Error("Paste one room confirmation at a time so its dates and price remain together.");
+ const property=/\bHotel Information\s+(.+?)\s+(\d+\s+.+?\b\d{5}(?:-\d{4})?\b)/i.exec(flat);
+ if(!property)throw new Error("Include the hotel name and street address with its ZIP code.");
+ const title=property[1].trim(),location=property[2].trim();
+ const stay=flat.split(/\bStay Information\b/i)[1].split(/\bGuest details|\bPayment details/i)[0];
+ const datePattern="(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat),?\\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\s+\\d{1,2},?\\s+\\d{4}(?!\\d)";
+ const range=new RegExp("("+datePattern+")\\s*[-–—]\\s*("+datePattern+")","i").exec(stay);
+ if(!range)throw new Error("Include both hotel stay dates and their four-digit years.");
+ const price=/\bRoom Price\s*(?:([A-Z]{3})\s*)?\$\s*([\d,]+\.\d{2})\b/i.exec(stay);
+ if(!price)throw new Error("Include the room price for this hotel stay.");
+ const currency=price[1]?.toUpperCase()||"USD";
+ const normalized=`${location}\nCheck-in\nCheck-out\n${range[1]}\n${range[2]}\nCancellation policy\nPrice Details\nTotal ${currency} $${price[2]}`;
+ const booking=hotelStayConfirmation(normalized,tripId,referenceDate)![0];
+ const nights=(Date.parse(booking.end.slice(0,10))-Date.parse(booking.start.slice(0,10)))/86400000;
+ if([...stay.matchAll(/\b(\d+)\s+Nights?\s+stay\b/gi)].some(m=>Number(m[1])!==nights))throw new Error("Hotel stay dates and number of nights disagree.");
+ const zone=/\bLos Angeles,?\s+(?:California|CA)\b/i.test(location)?"America/Los_Angeles":booking.zone;
+ return [{...booking,title,location,confirmation:references[0][1],zone,endZone:zone,priceBasis:"total",notes:
+  "Import review: Check-in/out times were not supplied; 4 PM and 11 AM are suggested defaults. "+
+  (!price[1]?"Currency assumed to be USD; confirm it. ":"")+
+  (zone?`Time zone inferred from the property address: ${zone}; confirm it. `:"Enter the property's time zone. ")+
+  "The room price includes taxes and fees. A card and deposit label do not specify an amount paid, so no payment has been recorded.\n\n"+text}];
+}
 function parseConfirmation(text:string,tripId:string,referenceDate:string):Booking[]{
+ const propertyHotel=propertyHotelConfirmation(text,tripId,referenceDate);if(propertyHotel)return propertyHotel;
  const jetstar=jetstarConfirmation(text,tripId,referenceDate);if(jetstar)return jetstar;
  const receipt=hotelPaymentReceipt(text,tripId);if(receipt)return receipt;
  const passkey=passkeyHotelConfirmation(text,tripId,referenceDate);if(passkey)return passkey;
