@@ -1247,3 +1247,250 @@ test('Currency previews tolerate editing while saved reservations require a comp
  assert.equal(money(1234.5),'$1,234.50');
  assert.equal(bookingSchema.safeParse({...blankBooking('trip'),kind:'Hotel',title:'Stay',currency:'AUD'}).success,true);
 });
+
+
+import {safeConfirmationLink} from "../lib/confirmation-links";
+import {ConfirmationNotes} from "../app/confirmation-notes";
+test("confirmation notes preserve clickable email links and reject unsafe destinations",()=>{
+ const result=ConfirmationNotes({text:'[Manage booking](https://example.com/manage?id=KR458A&token=abc) [Unsafe](javascript:alert)'});
+ const link=result.props.children[1].props.children.find((part:unknown)=>typeof part==="object"&&part!==null) as {props:{href:string;children:string;rel:string}};
+ assert.equal(link.props.href,"https://example.com/manage?id=KR458A&token=abc");
+ assert.equal(link.props.children,"Manage booking");
+ assert.equal(link.props.rel,"noopener noreferrer");
+ assert.equal(safeConfirmationLink('javascript:alert'),null);
+ assert.equal(safeConfirmationLink('data:text/html,hello'),null);
+ assert.equal(safeConfirmationLink('/relative'),null);
+});
+
+
+test("Jetstar subject repeats its flight number without creating a second flight",()=>{
+ const text="## Jetstar Flight Itinerary for (Booking ref# KR458A) JQ814 11/01/2027\n\n"+jetstarItinerary+"\n[Manage JQ814](https://example.com/manage?booking=KR458A)";
+ const [booking]=importConfirmation(text,"trip");
+ assert.equal(booking.flightNumber,"JQ814");
+ assert.equal(booking.start,"2027-01-11T12:55");
+ assert.equal(booking.end,"2027-01-11T13:25");
+ assert.equal(booking.payments.length,1);
+ assert.equal(booking.total,373);
+ assert.ok(booking.notes.includes("https://example.com/manage?booking=KR458A"));
+});
+
+
+test("Jetstar generic flight-number check-in guidance is not another booked flight",()=>{
+ const text="Jetstar Flight Itinerary for (Booking ref# KR458A) JQ814 11/01/2027\nJetstar Airways\nJQ814\n"+jetstarItinerary+"\nFlight numbers between JQ1 and JQ70: your flight departs from an international terminal";
+ const [booking]=importConfirmation(text,"trip");
+ assert.equal(booking.flightNumber,"JQ814");
+ assert.equal(booking.travelers,3);
+ assert.equal(booking.payments.length,1);
+ assert.equal(booking.start,"2027-01-11T12:55");
+ assert.equal(booking.endZone,"Australia/Brisbane");
+});
+
+const operaHouseInvoice=`None selected
+Sydney Opera House Order Confirmation
+Jan 9, 2027, 2:45 PM (GMT-8)
+The Sydney Opera House Tour - English
+Customer Number: 66845470
+Your Order and Tax Invoice
+# 55097296
+Order Placed
+Mon, 16 Nov 2026
+The Sydney Opera House Tour - English
+Sun, 10 Jan 2027
+View tickets
+Tour
+9:45am Tour
+Type
+Adult Tour
+Qty
+3
+Price
+$150.00
+Subtotal $150.00
+GST (Included) $13.64
+Total
+(Inc GST)
+$150.00
+Payments
+Visa, **** ..21 $150.00
+Total Paid
+$150.00
+Total Due $0.00
+Delivery
+Mobile Tickets
+Please arrive 15 minutes early before the tour departs.
+The Sydney Opera House Tour is a 1-hour walking tour that includes up to 300 stairs.
+Dining Options (last order 6:00pm): 11:30 AM - 6:00 PM`;
+test("Opera House tour uses invoice date and Sydney time instead of Gmail calendar summary",()=>{
+ for(const text of [operaHouseInvoice,operaHouseInvoice.split("\n").map(line=>"| "+line+" |\n| - |").join("\n")]){
+ const [b]=importConfirmation(text,"trip");
+ assert.equal(b.kind,"Excursion");assert.equal(b.start,"2027-01-10T09:45");assert.equal(b.end,"2027-01-10T10:45");
+ assert.equal(b.zone,"Australia/Sydney");assert.equal(b.confirmation,"55097296");assert.equal(b.travelers,3);
+ assert.equal(b.total,150);assert.equal(b.currency,"AUD");assert.equal(b.payments.length,1);assert.equal(b.payments[0].amount,150);assert.equal(b.payments[0].date,"2026-11-16");
+ }
+});
+test("Opera House tour rejects missing time and multiple invoice events",()=>{
+ assert.throws(()=>importConfirmation(operaHouseInvoice.replace("9:45am Tour","Tour"),"trip"));
+ assert.throws(()=>importConfirmation(operaHouseInvoice.replace("Delivery","The Sydney Opera House Tour - English Sun, 10 Jan 2027 Delivery"),"trip"));
+});
+
+
+test("confirmation notes render email tables and headings instead of markdown clutter",()=>{
+ const result=ConfirmationNotes({text:"| |\n| :- |\n## Flight details\n| Passenger | Seat |\n| --- | --- |\n| Alexander | **9D**<br>7kg |\nhttps://example.com/manage?long-token=secret"});
+ const blocks=result.props.children;
+ assert.equal(blocks.length,4);
+ assert.equal(blocks[0].type,"section");
+ assert.equal(blocks[1].type,"h4");
+ assert.equal(blocks[2].props.children.type,"table");
+ const link=blocks[3].props.children.find((part:unknown)=>typeof part==="object"&&part!==null);
+ assert.equal(link.props.children,"example.com");
+ assert.equal(link.props.href,"https://example.com/manage?long-token=secret");
+});
+
+
+test("email links remain visible even inside bold text or table cells",()=>{
+ const result=ConfirmationNotes({text:"| **[Check in now](https://example.com/checkin?token=abc)** |\n| --- |"});
+ const panel=result.props.children[0];
+ assert.equal(panel.type,"section");
+ const anchor=panel.props.children[1].props.children[0].props.children;
+ assert.equal(anchor.props.href,"https://example.com/checkin?token=abc");
+ assert.equal(anchor.props.target,"_blank");
+ assert.equal(anchor.props.children[0],"Check in now");
+});
+
+const agodaGmailPayment=`None selected
+Using Gmail with screen readers
+Booking confirmation with Agoda - Booking ID: 1075392566
+Amora Jamison Hotel
+Thu, Jan 7 - Mon, Jan 11
+Check-in starts at 2:00 PM
+Thu, Jan 7
+Check-out before 11:00 AM
+Mon, Jan 11
+Address
+11 Jamison Street, Sydney, Australia, 2000
+Sat, Nov 7, 1:39 PM (8 days ago)
+Your booking is now confirmed!
+Hi ALEXANDER EHRATH,
+For reference, your booking ID is 1075392566. To view, cancel, or modify your booking, use our easy self service.
+Manage my booking
+Amora Jamison Hotel
+5.0 stars rating out of five
+11 Jamison Street, Sydney, Australia, 2000
+Directions
+Check in
+Thursday January 7, 2027
+(after 2:00 PM)
+Check out
+Monday January 11, 2027
+(before 11:00 AM)
+Booking Information
+Reservation 1 room, 4 nights
+Room type Deluxe Park View Suite
+Occupancy 3 adults
+Benefits Free fitness center access, Coffee & tea, Free WiFi, Express check-in
+Booking is confirmed and paid.
+Payment details
+Rooms
+1 room(s) x 4 night(s) USD 868.40
+Taxes And Fees USD 88.57
+Total Charge USD 956.97
+Includes taxes and fees
+Paid Today USD 956.97
+Cancellation Policy
+Free Cancellation
+From 8 November 08:38AM (Sydney time)
+Partially Refundable
+From 6 January 12:00AM (Sydney time)
+Important Information
+Cancel for free before January 6, 2027.`;
+test("full Agoda Gmail paste ignores summary dates and imports the explicit paid total",()=>{
+ for(const text of [agodaGmailPayment,agodaGmailPayment.split('\n').map(line=>'| '+line+' |\n| - |').join('\n')]){
+ const [b]=importConfirmation(text,'trip','2026-11-15');
+ assert.equal(b.title,'Amora Jamison Hotel');assert.equal(b.location,'11 Jamison Street, Sydney, Australia, 2000');
+ assert.equal(b.start,'2027-01-07T14:00');assert.equal(b.end,'2027-01-11T11:00');assert.equal(b.zone,'Australia/Sydney');
+ assert.equal(b.confirmation,'1075392566');assert.equal(b.travelers,3);assert.equal(b.total,956.97);assert.equal(b.currency,'USD');
+ assert.equal(b.payments.length,1);assert.equal(b.payments[0].amount,956.97);assert.equal(b.payments[0].date,'2026-11-15');
+ assert.match(b.notes,/Payment date defaults to the import date/);
+ }
+});
+test("Agoda price does not imply payment, and mismatched payment currency is rejected",()=>{
+ const [b]=importConfirmation(agodaGmailPayment.replace('Paid Today USD 956.97',''),'trip');
+ assert.equal(b.payments.length,0);
+ assert.throws(()=>importConfirmation(agodaGmailPayment.replace('Paid Today USD','Paid Today AUD'),'trip'),/different currencies/);
+});
+
+const budgetRentalEmail="None selected\n\nSkip to content\nUsing Gmail with screen readers\n1 of 43,333\nBudget Rent A Car: Reservation Confirmation: ALEXANDER, your Budget reservation #07336241US3 at ME1 is confirmed\nInbox\nUpdates\nRental car with Budget Rent A Car\nSun, Jan 3 - Thu, Jan 7\nPick-up at\nSun, Jan 3 at 9:00\u202fAM\nDrop-off at\nThu, Jan 7 at 12:00\u202fPM\nAddress\nMelbourne Downtown,ME1,\nReservation code\n07336241US3\nBased on this email\nCorrect?\n\nBudget <budget@e.budget.com>\n3:42\u202fPM (0 minutes ago)\nto me\n\nView In Browser\nAdd budget@e.budget.com to your Address Book.\n.\tBudget\t.\nQuotes & Reservations\tDeals\tVehicles\tLocations\tFastbreak\tHelp & FAQs\n \n \n\t\n \n\n \t\t \n\t\n \n\n \n \n\t\n \n\n \t\n \nShorten your Time at the Counter with Budget PRECHECK\nAdd your driver\u2019s license and method of payment online before your upcoming reservation so you can get on the road quicker.\n \tGET STARTED NOW\t \n \n\t\n \n\n \n \n\t\n \n\n \t\n \n \n \nThank you Alexander, your vehicle has been reserved.\n \nPick up:\nSun Jan 03, 2027 at 09:00 hours\nDrop off:\nThu Jan 07, 2027 at 12:00 hours\nYour Confirmation Number:\n07336241US3\nModify/Cancel This Reservation.\n\n \nYour Vehicle\n\nToyota Camry or similar or similar\nKilometres: Unlimited free kilometres\nAutomatic Transmission\n \nEstimated Total:\tAUD 1,281.83\n \nBase Rate:\t499.99\nEquipment & Services:\t0.00\nProtections/Coverages:\t0.00\nLoss Damage Waiver:\tINCLUDED\nSurcharges & GST\t781.84\nAdmin Fee (3.5%):\t39.41\nOne Way Fees:\t500.00\nPremium Location Surcharge (8%):\t83.40\nVehicle Registration Fee\n(aud8.50/day):\t42.50\nTotal GST\t116.53\nView complete summary of charges\n \n \nLocation Information\nPick Up Location\nMelbourne Downtown,ME1\nShop 2/8 Franklin St, (Metro)\nMelbourne, VI 3000 AU\nCALL: (61) 2 9353 9399\nSun 8:00 AM - 2:00 PM; Mon - Fri 7:30 AM - 5:00 PM; Sat 8:00 AM - 2:00 PM\nDrop Off Location\nSydney World Square,P6Y\n395 Pitt St,\nSydney, NS 2000 AU\nCALL: (61) 2 9353 9399\nSun 8:00 AM - 12:00 PM; Mon - Fri 8:00 AM - 4:30 PM; Sat 8:00 AM - 12:00 PM\n \n\nPay Now reservations: pre-paid amounts may be refunded.\nPre-Authorisations: $200 for debit card payments.\n";
+
+test("Budget rental ignores Gmail summary, opening hours, fees and generic payment policies",()=>{
+ for(const text of [budgetRentalEmail,budgetRentalEmail.split('\n').map(line=>'| '+line+' |\n| - |').join('\n')]){
+ const [b]=importConfirmation(text,'trip');
+ assert.equal(b.kind,'Rental car');assert.equal(b.title,'Budget · Toyota Camry or similar');
+ assert.equal(b.confirmation,'07336241US3');assert.equal(b.start,'2027-01-03T09:00');assert.equal(b.end,'2027-01-07T12:00');
+ assert.equal(b.zone,'Australia/Melbourne');assert.equal(b.endZone,'Australia/Sydney');
+ assert.equal(b.total,1281.83);assert.equal(b.currency,'AUD');assert.equal(b.payments.length,0);
+ assert.match(b.location,/Shop 2\/8 Franklin St/);assert.match(b.location,/395 Pitt St/);
+ }
+});
+test("Budget rental rejects inconsistent date and missing pickup details",()=>{
+ assert.throws(()=>importConfirmation(budgetRentalEmail.replace('Sun Jan 03, 2027','Mon Jan 03, 2027'),'trip'),/weekday/);
+ assert.throws(()=>importConfirmation(budgetRentalEmail.replace('09:00 hours','hours'),'trip'),/pickup and drop-off/);
+});
+
+import {parseHotelMatches} from '../lib/hotels';
+test('hotel lookup keeps named lodging addresses and safe map links, drops incomplete places',()=>{
+ const hotel={properties:{name:'Amora Jamison Hotel',street:'Jamison Street',housenumber:'11',city:'Sydney',state:'New South Wales',postcode:'2000',country:'Australia',osm_value:'hotel'},geometry:{coordinates:[151.207,-33.865]}};
+ const matches=parseHotelMatches({features:[hotel,hotel,{...hotel,properties:{...hotel.properties,osm_value:'museum'}},{properties:{name:'Sydney',osm_value:'city'}},{...hotel,geometry:{coordinates:[999,999]}}]});
+ assert.equal(matches.length,1);assert.equal(matches[0].address,'11 Jamison Street, Sydney, New South Wales, 2000, Australia');
+ assert.ok(matches[0].mapUrl.startsWith('https://www.openstreetmap.org/'));
+ assert.deepEqual(parseHotelMatches({features:[]}),[]);assert.throws(()=>parseHotelMatches({error:'unavailable'}));
+});
+
+test('Agoda Grand Chancellor crosses New Year and offers missing hotel time defaults',()=>{
+ const text=agodaGmailPayment.replaceAll('Amora Jamison Hotel','Hotel Grand Chancellor Melbourne').replaceAll('1075392566','1065927718').replaceAll('11 Jamison Street, Sydney, Australia, 2000','131 Lonsdale Street, Melbourne, Australia').replace('Thursday January 7, 2027\n(after 2:00 PM)','Thursday December 31, 2026').replace('Monday January 11, 2027\n(before 11:00 AM)','Friday January 1, 2027').replace('Occupancy 3 adults','Occupancy 2 adults').replaceAll('956.97','280.97').replace('From 8 November 08:38AM (Sydney time)','From October 14th 01:45PM (Melbourne time)');
+ for(const source of [text,text.split('\n').map(line=>'| '+line+' |\n| - |').join('\n')]){
+ const [b]=importConfirmation(source,'trip','2026-11-15');
+ assert.equal(b.title,'Hotel Grand Chancellor Melbourne');assert.equal(b.start,'2026-12-31T16:00');assert.equal(b.end,'2027-01-01T11:00');
+ assert.deepEqual(b.suggestedHotelTimes,['start','end']);assert.equal(b.zone,'Australia/Melbourne');assert.equal(b.total,280.97);assert.equal(b.payments[0].amount,280.97);assert.equal(b.travelers,2);
+ }
+});
+
+const fareHarborTour=`Thanks for booking with us!
+Payments
+A$520.83
+Visa 4821
+11/15/26 at 12:29 PM
+Charged $366.72 (1 USD = 1.4202 AUD).
+**Booking #391622043**
+## Everglades Explorer Tour
+**Thursday, January 14, 2027 at 8:45 AM – 1:30 PM**
+3 Adults (Including Transfers)
+[Google Calendar](https://google.com/calendar/event?action=TEMPLATE&dates=20270113T224500Z%2F20270114T033000Z&details=Booking%20%23391622043%0Ahttps%3A%2F%2Ffareharbor.com%2Fembeds%2Fbook%2Fevergladesecosafaris%2Fbooking%2Fexample%2F&location=Everglades%20Eco%20Safaris%2C%20204%20Lake%20Flat%20Road%2C%20Elanda%20Point%2C%20Queensland%2C%204565%2C%20AU)
+### We'll pick you up at 7:58 AM from Noosa Pde at Nancy Cato Park
+Please wait at public bus stop # 301764.
+The shuttle bus departs at 3:00pm. All drop offs completed by 3.45pm.
+Check-in
+Please report to check-in desk.
+| Adult | A$153.64 |
+| --- | --- |
+| Adult | A$153.64 |
+| Adult | A$153.64 |
+| Subtotal | A$460.92 |
+| GST | A$46.08 |
+| Fees | A$13.83 |
+| **Total** | **A$520.83** |
+| **Total paid** | **A$520.83** |
+Powered byFareHarbor`;
+test('FareHarbor tour separates shuttle times and converted USD charge from the AUD total',()=>{
+ for(const source of [fareHarborTour,fareHarborTour.replaceAll('&','\\&')]){
+ const [b]=importConfirmation(source,'trip','2026-11-16');
+ assert.equal(b.kind,'Excursion');assert.equal(b.start,'2027-01-14T08:45');assert.equal(b.end,'2027-01-14T13:30');assert.equal(b.zone,'Australia/Brisbane');
+ assert.equal(b.confirmation,'391622043');assert.equal(b.travelers,3);assert.equal(b.total,520.83);assert.equal(b.currency,'AUD');assert.equal(b.priceBasis,'total');
+ assert.equal(b.payments.length,1);assert.equal(b.payments[0].amount,520.83);assert.equal(b.payments[0].date,'2026-11-15');
+ assert.match(b.location,/204 Lake Flat Road/);assert.match(b.notes,/Shuttle pickup: 7:58 AM from Noosa Pde at Nancy Cato Park/);
+ }
+});
+test('FareHarbor tour checks calendar consistency and works without calendar links',()=>{
+ assert.throws(()=>importConfirmation(fareHarborTour.replace('20270113T224500Z','20270113T234500Z'),'trip'),/disagree/);
+ const [b]=importConfirmation(fareHarborTour.replace(/\[Google Calendar\]\([^\n]+\)/,''),'trip');
+ assert.equal(b.location,'');assert.equal(b.start,'2027-01-14T08:45');
+});

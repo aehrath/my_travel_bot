@@ -264,7 +264,11 @@ function compactHotelConfirmation(text:string,tripId:string,referenceDate:string
  return bookings.map(booking=>({...booking,suggestedHotelTimes:["start","end"],title,location,notes:booking.notes.split("\n\n")[0].replace("Property name is absent. A provisional name uses the address; rename it when known. ", "").replace("The cancellation deadline is retained in notes, not used as a payment due date.", "")+" Check-in/out times were not supplied; 16:00 and 11:00 are suggested defaults; you can use them or edit them. Payment details describe the price, not proof of payment; no payment is recorded unless explicitly dated.\n\n"+text}));
 }
 function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):Booking[]|null {
- const plain=clean(text.replace(/\|/g,"\n")).replace(/\bCheck[ -]?(in|out)\b/gi,(_,end:string)=>`Check-${end.toLowerCase()}`);
+ let plain=clean(text.replace(/\|/g,"\n")).replace(/\bCheck[ -]?(in|out)\b/gi,(_,end:string)=>`Check-${end.toLowerCase()}`);
+ // Gmail adds undated stay summaries and message timestamps before the actual
+ // Agoda confirmation. Those are not additional hotel dates or stay times.
+ const agodaBody=/Your booking is now confirmed!/i.exec(plain);
+ if(agodaBody&&/\byour booking ID is\s*:?\s*\d+/i.test(plain.slice(agodaBody.index)))plain=plain.slice(agodaBody.index);
  if(!/\bCheck-in\b/i.test(plain)||!/\bCheck-out\b/i.test(plain))return null;
  // Limit parsing to the stay section: cancellation dates/times are not checkout or payment deadlines.
  const stay=plain.split(/\bFree cancellation|\bCancellation policy/i)[0];
@@ -326,8 +330,8 @@ function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):B
  const price=plain.split(/\bPrice Details\b/i)[1]||"";
  const money="(?:([A-Z]{3})\\s*)?([$€£])\\s*(\\d[\\d,]*\\.\\d{2})\\b";
  const quoted=new RegExp("\\bTotal\\s*:?\\s*"+money,"i").exec(price);
- const currency=quoted?.[1]?.toUpperCase()||(quoted?.[2]==="€"?"EUR":quoted?.[2]==="£"?"GBP":"USD");
- const total=quoted?Number(quoted[3].replace(/,/g,"")):0;
+ let currency=quoted?.[1]?.toUpperCase()||(quoted?.[2]==="€"?"EUR":quoted?.[2]==="£"?"GBP":"USD");
+ let total=quoted?Number(quoted[3].replace(/,/g,"")):0;
  const payments:Booking["payments"]=[];
  if(quoted){
   if(!quoted[1]&&quoted[2]==="$")warnings.push("Currency assumed to be USD because the confirmation only says $; confirm it.");
@@ -341,6 +345,19 @@ function hotelStayConfirmation(text:string,tripId:string,referenceDate:string):B
    payments.push({id:uid(),amount:Number(record[6].replace(/,/g,"")),date,note:"Paid to Expedia"});
   }
   if(/\bPaid on\b/i.test(price)&&!payments.length)warnings.push("The payment date or amount could not be read; add the payment manually.");
+ }else if(agodaId){
+  const paymentSection=plain.split(/\bPayment details\b/i)[1]?.split(/\bCancellation Policy\b/i)[0]||"";
+  const charge=/\bTotal Charge\s+([A-Z]{3})\s*\$?\s*([\d,]+\.\d{2})/i.exec(paymentSection);
+  const paidToday=/\bPaid Today\s+([A-Z]{3})\s*\$?\s*([\d,]+\.\d{2})/i.exec(paymentSection);
+  if(charge){
+   currency=charge[1].toUpperCase();total=Number(charge[2].replace(/,/g,""));
+   if(paidToday){
+    if(paidToday[1].toUpperCase()!==currency)throw new Error("Agoda payment and total use different currencies. Review the amounts.");
+    const amount=Number(paidToday[2].replace(/,/g,""));
+    if(amount>0)payments.push({id:uid(),amount,date:referenceDate,note:"Paid to Agoda — payment date not supplied, defaults to import date"});
+    warnings.push("Paid Today confirms the payment amount but not its calendar date. Payment date defaults to the import date; correct it to the original payment date.");
+   }
+  }else warnings.push("Cost is absent; add it when known.");
  }else warnings.push("Cost is absent; add it when known.");
  warnings.push("The cancellation deadline is retained in notes, not used as a payment due date.");
  const booking:Booking={...blankBooking(tripId),kind:"Hotel",title,location,confirmation:itinerary?.[1]||agodaId||"",suggestedHotelTimes,start:startDate+"T"+startTime,end:endDate+"T"+endTime,zone,endZone:zone,total,currency,payments,notes:"Import review: "+warnings.join(" ")+"\n\n"+text};
@@ -440,11 +457,16 @@ function jetstarConfirmation(text:string,tripId:string,referenceDate:string):Boo
  const plain=clean(text).replace(/\s+/g," ");
  // Airline logos are images and are removed by the rich-text paste sanitizer.
  // Recognize the carrier by its flight code, without requiring logo alt text.
- const flights=[...plain.matchAll(/\bJQ\s*(\d{1,4})(?=Jetstar|\b)/gi)];
+ const guidance=[...plain.matchAll(/\bFlight numbers between\s+JQ\s*\d{1,4}\s+and\s+JQ\s*\d{1,4}\b/gi)];
+ const flights=[...plain.matchAll(/\bJQ\s*(\d{1,4})(?=Jetstar|\b)/gi)].filter(f=>!guidance.some(g=>f.index!>=g.index!&&f.index!<g.index!+g[0].length));
  if(!flights.length||!(/\bFlight Itinerary\b/i.test(plain)||(/\bDeparting\b/i.test(plain)&&/\bArriving\b/i.test(plain))))return null;
- if(flights.length!==1)throw new Error("Paste one Jetstar flight at a time so the booking payment is not counted twice.");
+ if(new Set(flights.map(f=>f[1])).size!==1)throw new Error("Paste one Jetstar flight at a time so the booking payment is not counted twice.");
+ // A subject line can repeat the same flight number. Start at the flight table,
+ // after its headings, so the subject and departure summary are not endpoints.
+ const headings=/\bDeparting\b.*?\bArriving\b/i.exec(plain);
+ const flight=flights.find(f=>!headings||f.index!>headings.index+headings[0].length)??flights[0];
  // Ignore the issue/booking dates and the repeated departure summary above the flight number.
- const route=plain.slice(flights[0].index!+flights[0][0].length).split(/\bPassenger\s*:/i)[0];
+ const route=plain.slice(flight.index!+flight[0].length).split(/\bPassenger\s*:/i)[0];
  const dates=[...route.matchAll(/\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})\s+(\d{1,2}:\d{2}\s*(?:am|pm)(?:\s*\/\s*\d{1,2}:\d{2})?)/gi)];
  if(dates.length!==2)throw new Error("Include both Jetstar airport names, travel dates, and local times.");
  const endpoints=dates.map((m,i)=>{
@@ -499,7 +521,109 @@ function propertyHotelConfirmation(text:string,tripId:string,referenceDate:strin
   (zone?`Time zone inferred from the property address: ${zone}; confirm it. `:"Enter the property's time zone. ")+
   "The room price includes taxes and fees. A card and deposit label do not specify an amount paid, so no payment has been recorded.\n\n"+text}];
 }
+function operaHouseTourConfirmation(text:string,tripId:string):Booking[]|null {
+ const plain=clean(text).replace(/\s+/g," ");
+ if(!/Sydney Opera House/i.test(plain)||!/Your Order and Tax Invoice/i.test(plain))return null;
+ // Ignore Gmail's calendar summary (which may display the customer's time zone).
+ const invoice=plain.split(/Your Order and Tax Invoice/i)[1].split(/\bDelivery\b/i)[0];
+ const tour=/The Sydney Opera House Tour\s*-\s*English\s+(Sun|Mon|Tue|Wed|Thu|Fri|Sat),?\s+(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/gi;
+ const events=[...invoice.matchAll(tour)];
+ if(events.length!==1)throw new Error("Include one Sydney Opera House tour's date, ticket quantity, and invoice at a time.");
+ const event=events[0];
+ const dateOf=(day:string,month:string,year:string)=>{
+  const monthNumber=months.indexOf(month.toLowerCase())+1;
+  const date=`${year}-${String(monthNumber).padStart(2,"0")}-${day.padStart(2,"0")}`;
+  const parsed=new Date(date+"T00:00:00Z");
+  if(!monthNumber||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==date)throw new Error("Check the Sydney Opera House invoice dates.");
+  return date;
+ };
+ const date=dateOf(event[2],event[3],event[4]);
+ const details=invoice.slice(event.index!+event[0].length);
+ const time=/\b(\d{1,2}:\d{2}\s*(?:am|pm))\s+Tour\b/i.exec(details);
+ const quantity=/\bQty\s+(\d+)\b/i.exec(details);
+ const total=/\bTotal\s*\(Inc GST\)\s*\$([\d,]+\.\d{2})/i.exec(details);
+ const paidAmount=/\bTotal Paid\s*\$([\d,]+\.\d{2})/i.exec(details);
+ const orderDate=/\bOrder Placed\s+(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat),?\s+(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/i.exec(invoice);
+ const reference=/^\s*(\d+)\b/.exec(invoice)?.[1];
+ const duration=/Sydney Opera House Tour is a\s+(\d+)[- ]hour walking tour/i.exec(plain);
+ if(!time||!quantity||!total||!reference||!duration||!orderDate)throw new Error("Include the Sydney Opera House tour time, duration, quantity, total, and order details.");
+ const start=date+"T"+clock(time[1]);
+ const end=new Date(Date.parse(start+"Z")+Number(duration[1])*3600000).toISOString().slice(0,16);
+ const amount=paidAmount?Number(paidAmount[1].replace(/,/g,"")):0;
+ return [bookingSchema.parse({...blankBooking(tripId),kind:"Excursion",title:"The Sydney Opera House Tour - English",start,end,zone:"Australia/Sydney",endZone:"Australia/Sydney",
+  travelers:Number(quantity[1]),priceBasis:"total",confirmation:reference,location:"Sydney Opera House, Bennelong Point, Sydney NSW 2001, Australia",url:"https://wallet.sydneyoperahouse.com",currency:"AUD",total:Number(total[1].replace(/,/g,"")),
+  payments:amount>0?[{id:uid(),amount,date:dateOf(orderDate[1],orderDate[2],orderDate[3]),note:"Total Paid on invoice; payment date inferred from order date"}]:[],
+  notes:"Import review: Tour date and time use Australia/Sydney, not Gmail's calendar summary. Duration comes from the stated walking-tour length. Currency inferred as AUD from the Sydney venue; confirm it. Payment date uses the order date. Arrive at the Welcome Centre 15 minutes early.\n\n"+text})];
+}
+function budgetRentalConfirmation(text:string,tripId:string):Booking[]|null {
+ const plain=clean(text).replace(/\s+/g," ");
+ if(!/\bBudget\b/i.test(plain)||!/your vehicle has been reserved/i.test(plain))return null;
+ const body=plain.split(/your vehicle has been reserved\.?/i)[1];
+ const stamp=(label:string)=>{
+  const m=new RegExp(label+":\\s*(Sun|Mon|Tue|Wed|Thu|Fri|Sat)\\s+([A-Za-z]{3})\\s+(\\d{1,2}),\\s+(\\d{4})\\s+at\\s+(\\d{2}:\\d{2})\\s+hours","i").exec(body);
+  if(!m)throw new Error("Include the Budget pickup and drop-off dates, years, and times.");
+  const date=`${m[4]}-${String(months.indexOf(m[2].toLowerCase())+1).padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+  const parsed=new Date(date+"T00:00:00Z");
+  if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==date||["sun","mon","tue","wed","thu","fri","sat"][parsed.getUTCDay()]!==m[1].toLowerCase())throw new Error("Budget rental date and weekday disagree. Check the dates.");
+  return date+"T"+clock(m[5]);
+ };
+ const start=stamp("Pick[ -]?up"),end=stamp("Drop[ -]?off");
+ const confirmation=/Your Confirmation Number:\s*([A-Z0-9]+)/i.exec(body)?.[1];
+ const vehicle=/Your Vehicle\s+(.+?)\s+Kilometres:/i.exec(body)?.[1].replace(/(?:\s+or similar){2,}/gi," or similar");
+ const total=/Estimated Total:\s*([A-Z]{3})\s+([\d,]+\.\d{2})/i.exec(body);
+ const locations=body.split(/Location Information/i)[1]||"";
+ const pickup=/Pick Up Location\s+(.+?)\s+CALL:/i.exec(locations)?.[1];
+ const dropoff=/Drop Off Location\s+(.+?)\s+CALL:/i.exec(locations)?.[1];
+ if(!confirmation||!vehicle||!total||!pickup||!dropoff)throw new Error("Include the Budget confirmation number, vehicle, estimated total, and both location addresses.");
+ const zoneFor=(address:string)=>{
+  const zones=[...new Set(airports.filter(a=>a.country==="AU"&&a.city&&new RegExp("\\b"+a.city.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\b","i").test(address)).map(a=>a.zone))];
+  return zones.length===1?zones[0]:"";
+ };
+ const zone=zoneFor(pickup),endZone=zoneFor(dropoff);
+ const booking:Booking={...blankBooking(tripId),kind:"Rental car",title:"Budget · "+vehicle,start,end,zone,endZone,confirmation,
+  location:`Pick up: ${pickup} → Drop off: ${dropoff}`,total:Number(total[2].replace(/,/g,"")),currency:total[1].toUpperCase(),priceBasis:"total",payments:[],
+  notes:"Import review: Estimated total includes the quoted charges; the breakdown is not added again. No payment is confirmed by this email. Generic Pay Now policies and card holds are not recorded payments. "+(zone&&endZone?"Time zones inferred from the Australian pickup and drop-off cities; confirm them.":"Enter the pickup and drop-off time zones.")+"\n\n"+text};
+ bookingSchema.parse({...booking,zone:zone||"UTC",endZone:endZone||"UTC"});
+ return [booking];
+}
+function fareHarborEvergladesConfirmation(text:string,tripId:string,referenceDate:string):Booking[]|null {
+ const plain=clean(text.replace(/\|/g,"\n"));
+ if(!/FareHarbor/i.test(text)||!/Everglades Explorer Tour/i.test(plain))return null;
+ const flat=plain.replace(/\s+/g," ");
+ const reference=/\bBooking\s+(\d+)\b/i.exec(flat)?.[1];
+ const date=/\b(Thursday|Monday|Tuesday|Wednesday|Friday|Saturday|Sunday),?\s+([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})\s+at\s+(\d{1,2}:\d{2}\s*(?:AM|PM))\s*[–—-]\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i.exec(flat);
+ const total=/\bTotal\s+A\$([\d,]+\.\d{2})/i.exec(flat);
+ const paidTotal=/\bTotal paid\s+A\$([\d,]+\.\d{2})/i.exec(flat);
+ if(!reference||!date||!total)throw new Error("Include the FareHarbor booking number, tour date and time range, and AUD total.");
+ const day=`${date[4]}-${String(months.indexOf(date[2].slice(0,3).toLowerCase())+1).padStart(2,"0")}-${date[3].padStart(2,"0")}`;
+ const parsed=new Date(day+"T00:00:00Z");
+ if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==day||["sunday","monday","tuesday","wednesday","thursday","friday","saturday"][parsed.getUTCDay()]!==date[1].toLowerCase())throw new Error("FareHarbor tour date and weekday disagree.");
+ const start=day+"T"+clock(date[5]),end=day+"T"+clock(date[6]);
+ const calendarLink=/https:\/\/(?:www\.)?google\.com\/calendar\/event[^\s)]+/i.exec(text)?.[0];
+ let location="",url="";
+ if(calendarLink){
+  const calendar=new URL(calendarLink.replace(/\\&/g,"&").replace(/&amp;/g,"&"));
+  location=calendar.searchParams.get("location")||"";
+  const utc=calendar.searchParams.get("dates")?.split("/");
+  if(utc){
+   const compact=(value:string)=>new Date(instant(value,"Australia/Brisbane")).toISOString().replace(/[-:]/g,"").replace(".000","");
+   if(utc[0]!==compact(start)||utc[1]!==compact(end))throw new Error("FareHarbor calendar and displayed tour times disagree. Review the confirmation.");
+  }
+  const bookingLink=/https:\/\/fareharbor\.com\/[^\s]+/i.exec(calendar.searchParams.get("details")||"")?.[0];
+  if(bookingLink)url=bookingLink;
+ }
+ const paymentDate=/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+at\s+\d{1,2}:\d{2}\s*(?:AM|PM)/i.exec(flat);
+ const paidOn=paymentDate?`${paymentDate[3].length===2?"20":""}${paymentDate[3]}-${paymentDate[1].padStart(2,"0")}-${paymentDate[2].padStart(2,"0")}`:referenceDate;
+ const pickup=/We'll pick you up at\s+(.+?)(?=\s+Please wait|\n)/i.exec(plain)?.[1];
+ const amount=paidTotal?Number(paidTotal[1].replace(/,/g,"")):0;
+ return [bookingSchema.parse({...blankBooking(tripId),kind:"Excursion",title:"Everglades Explorer Tour",confirmation:reference,start,end,zone:"Australia/Brisbane",endZone:"Australia/Brisbane",location,url,currency:"AUD",total:Number(total[1].replace(/,/g,"")),priceBasis:"total",
+  payments:amount>0?[{id:uid(),amount,date:paidOn,note:"Paid to FareHarbor in AUD; converted card charge is not a second payment"}]:[],
+  notes:"Import review: Tour times use Queensland (Australia/Brisbane). The AUD total includes taxes and fees. The USD card charge is a conversion of the same payment, not an additional cost."+(paymentDate?"":" Payment date defaults to import date; confirm it.")+(!location?" Venue address was not included in the pasted links; enter it if needed.":"")+"\n\n"+(pickup?"Shuttle pickup: "+pickup+". Be ready 10 minutes early.\n\n":"")+text})];
+}
 function parseConfirmation(text:string,tripId:string,referenceDate:string):Booking[]{
+ const fareHarbor=fareHarborEvergladesConfirmation(text,tripId,referenceDate);if(fareHarbor)return fareHarbor;
+ const rental=budgetRentalConfirmation(text,tripId);if(rental)return rental;
+ const operaTour=operaHouseTourConfirmation(text,tripId);if(operaTour)return operaTour;
  const propertyHotel=propertyHotelConfirmation(text,tripId,referenceDate);if(propertyHotel)return propertyHotel;
  const jetstar=jetstarConfirmation(text,tripId,referenceDate);if(jetstar)return jetstar;
  const receipt=hotelPaymentReceipt(text,tripId);if(receipt)return receipt;
